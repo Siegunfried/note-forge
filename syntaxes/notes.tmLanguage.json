@@ -1,0 +1,23 @@
+{
+  "scopeName": "inline.note-forge",
+  "patterns": [
+    {
+      "match": "^[ \\t]*([_?!~%#@=&]+)(?=\\s|\\{|$)",
+      "captures": {
+        "1": {
+          "patterns": [
+            { "name": "keyword.control.note-forge.important", "match": "!" },
+            { "name": "string.note-forge.question", "match": "\\?" },
+            { "name": "constant.numeric.note-forge.formula", "match": "~" },
+            { "name": "comment.note-forge.thought", "match": "%" },
+            { "name": "keyword.note-forge.explain", "match": "#" },
+            { "name": "entity.name.type.note-forge.web", "match": "@" },
+            { "name": "variable.note-forge.verbatim", "match": "=" },
+            { "name": "entity.name.function.note-forge.compare", "match": "&" },
+            { "name": "markup.italic.note-forge.fill", "match": "_" }
+          ]
+        }
+      }
+    }
+  ]
+}

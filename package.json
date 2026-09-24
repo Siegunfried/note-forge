@@ -1,0 +1,140 @@
+{
+  "name": "note-forge",
+  "displayName": "Note Forge — 速记整理助手",
+  "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
+  "version": "0.1.0",
+  "publisher": "note-forge",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Formatters"
+  ],
+  "keywords": [
+    "notes",
+    "shorthand",
+    "markdown",
+    "ai",
+    "deepseek",
+    "organize"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "noteForge.organize",
+        "title": "整理当前笔记（补全）",
+        "category": "Note Forge"
+      },
+      {
+        "command": "noteForge.create",
+        "title": "新建速记",
+        "category": "Note Forge",
+        "icon": "$(add)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "noteForge.organize",
+        "key": "ctrl+enter",
+        "when": "editorTextFocus && editorLangId =~ /^(markdown|plaintext|forge)$/"
+      }
+    ],
+    "languages": [
+      {
+        "id": "forge",
+        "extensions": [
+          ".forge"
+        ],
+        "aliases": [
+          "Note Forge 速记",
+          "forge"
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Note Forge",
+      "properties": {
+        "noteForge.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "DeepSeek / OpenAI 兼容的 API Key。留空时读环境变量 DEEPSEEK_API_KEY。"
+        },
+        "noteForge.apiBaseUrl": {
+          "type": "string",
+          "default": "https://api.deepseek.com/chat/completions",
+          "description": "OpenAI 兼容的 chat/completions 地址。"
+        },
+        "noteForge.model": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "模型名。"
+        },
+        "noteForge.maxTokens": {
+          "type": "number",
+          "default": 8192,
+          "description": "单次输出 token 上限。"
+        },
+        "noteForge.temperature": {
+          "type": "number",
+          "default": 0.3,
+          "description": "采样温度，整理任务偏确定，建议 0.3 左右。"
+        }
+      }
+    },
+    "grammars": [
+      {
+        "language": "forge",
+        "scopeName": "source.forge",
+        "path": "./syntaxes/forge.tmLanguage.json"
+      },
+      {
+        "scopeName": "inline.note-forge",
+        "path": "./syntaxes/notes.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown",
+          "text.plain"
+        ]
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "noteForge",
+          "title": "Note Forge",
+          "icon": "media/note-forge.svg"
+        }
+      ]
+    },
+    "views": {
+      "noteForge": [
+        {
+          "id": "noteForge.welcome",
+          "name": "速记"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "noteForge.create",
+          "when": "view == noteForge.welcome",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --baseContentUrl https://example.com/note-forge --baseImagesUrl https://example.com/note-forge"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}
