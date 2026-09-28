@@ -11,14 +11,17 @@
  */
 
 import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import { getSettings } from "../config/settings";
-import { loadPrompt, readPromptText } from "../core/promptLoader";
+import { readPromptText } from "../core/promptLoader";
 import { organize } from "../core/organizer";
+import { extractReferences, loadReferences } from "../core/references";
 import { ApiError, ApiClientConfig, chatCompletion } from "../core/apiClient";
 import { resolvePairing, Pairing } from "../core/pairing";
 import {
   diffAppend,
+  diffIncremental,
   extractOutline,
   buildIncrementalPrompt,
   parseIncrementalResult,
@@ -27,6 +30,15 @@ import {
 import { OrganizeResult } from "../types";
 
 const SNAPSHOT_KEY = "noteForge.snapshots";
+
+/** 诊断日志输出通道（写到「输出 → Note Forge」，不打扰正常使用）。 */
+let diagChannel: vscode.OutputChannel | undefined;
+function diag(): vscode.OutputChannel {
+  if (!diagChannel) {
+    diagChannel = vscode.window.createOutputChannel("Note Forge");
+  }
+  return diagChannel;
+}
 
 export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
   const editor = vscode.window.activeTextEditor;
@@ -63,9 +75,7 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
     return;
   }
 
-  // 课程 prompt 用「源文件」路径向上定位。
-  const resolution = loadPrompt(pairing.sourcePath);
-  const promptText = readPromptText(resolution);
+  const promptText = readPromptText();
   const config: ApiClientConfig = {
     apiKey: settings.apiKey,
     baseUrl: settings.apiBaseUrl,
@@ -77,19 +87,28 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
   try {
     // 增量整理：仅双文件流模式（forge / md-linked）且纯追加时启用。
     if (pairing.mode !== "inline") {
-      const snapshot = getSnapshot(state, pairing.sourcePath);
-      if (snapshot && snapshot !== rawText) {
-        const diff = diffAppend(snapshot, rawText);
-        if (diff.isAppend && diff.added.trim()) {
+      const snapshot = getSnapshot(state, pairing.sourcePath, rawText);
+      if (!snapshot) {
+        diag().appendLine(
+          `[增量] 跳过：${pairing.sourcePath} 无上次快照（首次整理或快照丢失）`,
+        );
+      } else if (snapshot === rawText) {
+        diag().appendLine(`[增量] 跳过：原文与上次快照一致，无新增内容`);
+      } else {
+        const added = diffIncremental(snapshot, rawText);
+        if (!added) {
+          diag().appendLine(`[增量] 跳过：检测到修改/删除已有内容（非追加、非插入缩进子层），回退整篇`);
+        } else {
           const inc = await runIncremental(
             editor,
             pairing,
             promptText,
-            diff.added,
+            added,
             config,
           );
           if (inc) {
             setSnapshot(state, pairing.sourcePath, rawText);
+            diag().appendLine(`[增量] 成功：${pairing.sourcePath}`);
             vscode.window.showInformationMessage(
               `增量整理完成 ✓${formatUsage(inc)}`,
             );
@@ -100,13 +119,18 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
       }
     }
 
-    // 整篇整理（首次 / 非纯追加 / 增量失败时兜底）。
+    // 整篇整理（首次 / 非纯追加 / 增量失败时兜底）。基于已有 .md 整合，避免重写丢内容。
+    const existingMd = readExistingMd(editor, pairing);
+    const references = await loadReferences(
+      extractReferences(rawText),
+      path.dirname(pairing.sourcePath),
+    );
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Note Forge 整理中（${resolution.courseName}）…`,
+        title: "Note Forge 整理中…",
       },
-      () => organize(rawText, promptText, config),
+      () => organize(rawText, promptText, config, references, existingMd),
     );
 
     await writeResult(editor, pairing, result.markdown);
@@ -137,17 +161,23 @@ async function runIncremental(
     try {
       currentMd = fs.readFileSync(pairing.targetPath, "utf-8");
     } catch {
+      diag().appendLine(`[增量] 失败：成品 ${pairing.targetPath} 不存在，回退整篇`);
       return null; // 成品 .md 还不存在
     }
   } else {
     currentMd = editor.document.getText();
   }
   if (!currentMd.trim()) {
+    diag().appendLine(`[增量] 失败：当前 .md 为空，回退整篇`);
     return null;
   }
 
   const outline = extractOutline(currentMd);
-  const prompt = buildIncrementalPrompt(promptText, outline, added);
+  const references = await loadReferences(
+    extractReferences(added),
+    path.dirname(pairing.sourcePath),
+  );
+  const prompt = buildIncrementalPrompt(promptText, outline, added, references);
 
   const result = await vscode.window.withProgress(
     {
@@ -159,6 +189,9 @@ async function runIncremental(
 
   const parsed = parseIncrementalResult(result.markdown);
   if (!parsed) {
+    diag().appendLine(
+      `[增量] 失败：AI 返回无法解析为 JSON，回退整篇。原始返回前 300 字：\n${result.markdown.slice(0, 300)}`,
+    );
     return null;
   }
 
@@ -174,20 +207,61 @@ function formatUsage(result: OrganizeResult): string {
     : "";
 }
 
-/** 快照：读取某 .forge 上次整理成功的原文。 */
+/** 判断 prev 是否为 current 的逐行前缀（即 current 由 prev 纯追加而来）。 */
+function isAppendOf(prev: string, current: string): boolean {
+  return !!prev && diffAppend(prev, current).isAppend;
+}
+
+/** 快照：读取某 .forge 上次整理成功的原文；路径失效时按内容前缀找回。 */
 function getSnapshot(
   state: vscode.Memento,
   forgePath: string,
+  rawText: string,
 ): string | undefined {
   const map = state.get<Record<string, string>>(SNAPSHOT_KEY, {});
-  return map[forgePath];
+  if (map[forgePath]) {
+    return map[forgePath];
+  }
+  // 文件被移动 / 重命名后路径失效：找一条「是当前原文逐行前缀」的旧快照。
+  for (const text of Object.values(map)) {
+    if (isAppendOf(text, rawText)) {
+      return text;
+    }
+  }
+  return undefined;
 }
 
-/** 快照：记录某 .forge 本次整理成功的原文。 */
+/** 快照：记录某 .forge 本次整理成功的原文，并清理移动后残留的旧路径快照。 */
 function setSnapshot(state: vscode.Memento, forgePath: string, text: string): void {
   const map = state.get<Record<string, string>>(SNAPSHOT_KEY, {});
   map[forgePath] = text;
+  for (const [p, t] of Object.entries(map)) {
+    if (p !== forgePath && isAppendOf(t, text)) {
+      delete map[p];
+    }
+  }
   void state.update(SNAPSHOT_KEY, map);
+}
+
+/** 文件在 VSCode 内被移动 / 重命名时，把快照精确迁移到新路径（不靠内容猜测）。 */
+export function migrateSnapshotsOnRename(
+  state: vscode.Memento,
+  event: vscode.FileRenameEvent,
+): void {
+  const map = state.get<Record<string, string>>(SNAPSHOT_KEY, {});
+  let changed = false;
+  for (const { oldUri, newUri } of event.files) {
+    const oldPath = oldUri.fsPath;
+    const newPath = newUri.fsPath;
+    if (oldPath !== newPath && map[oldPath]) {
+      map[newPath] = map[oldPath];
+      delete map[oldPath];
+      changed = true;
+    }
+  }
+  if (changed) {
+    void state.update(SNAPSHOT_KEY, map);
+  }
 }
 
 /** 读取本次要整理的原文。 */
@@ -210,6 +284,24 @@ function readSourceText(
   return selection.isEmpty ? doc.getText() : doc.getText(selection);
 }
 
+/** 读取已有成品（整篇整理时作为保留基线，避免重写丢内容）。 */
+function readExistingMd(
+  editor: vscode.TextEditor,
+  pairing: Pairing,
+): string {
+  if (pairing.mode === "forge") {
+    try {
+      return fs.readFileSync(pairing.targetPath, "utf-8");
+    } catch {
+      return "";
+    }
+  }
+  if (pairing.mode === "md-linked") {
+    return editor.document.getText();
+  }
+  return "";
+}
+
 /** 写回成品。 */
 async function writeResult(
   editor: vscode.TextEditor,
@@ -219,8 +311,6 @@ async function writeResult(
   if (pairing.mode === "forge") {
     const targetUri = vscode.Uri.file(pairing.targetPath);
     await vscode.workspace.fs.writeFile(targetUri, Buffer.from(markdown, "utf8"));
-    const targetDoc = await vscode.workspace.openTextDocument(targetUri);
-    await vscode.window.showTextDocument(targetDoc);
     return;
   }
 
@@ -261,4 +351,30 @@ async function replaceWholeDocument(
   await editor.edit((editBuilder) => {
     editBuilder.replace(fullRange, markdown);
   });
+}
+
+/** 「更新快照」命令：把当前 .forge 原文手动记为增量基线。 */
+export async function updateSnapshot(state: vscode.Memento): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showWarningMessage("没有打开的笔记文件。");
+    return;
+  }
+
+  const pairing = resolvePairing(editor.document.uri.fsPath);
+  if (pairing.mode === "inline") {
+    vscode.window.showInformationMessage(
+      "当前文件没有对应的 .forge 速记，无需更新快照。",
+    );
+    return;
+  }
+
+  const rawText = readSourceText(editor.document, editor.selection, pairing);
+  if (!rawText.trim()) {
+    vscode.window.showWarningMessage("原文为空，未更新快照。");
+    return;
+  }
+
+  setSnapshot(state, pairing.sourcePath, rawText);
+  vscode.window.showInformationMessage("快照已更新 ✓（下次整理将以此为增量基线）");
 }

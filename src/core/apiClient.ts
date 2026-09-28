@@ -1,9 +1,15 @@
 /**
  * 底层 HTTP 客户端：调用 OpenAI 兼容的 chat/completions 接口。
  * 只负责「发请求、解析响应、报错」，不涉及任何笔记/符号/提示词逻辑。
+ * 内置：超时控制、网络/限流/服务端错误的重试（指数退避）、友好的错误信息。
  */
 
 import { ChatMessage, OrganizeResult } from "../types";
+
+/** 单次请求超时（毫秒）。 */
+const TIMEOUT_MS = 120_000;
+/** 初次失败后的最大重试次数（共 1 + 2 次调用）。 */
+const MAX_RETRIES = 2;
 
 export class ApiError extends Error {
   constructor(
@@ -23,7 +29,7 @@ export interface ApiClientConfig {
   maxTokens: number;
 }
 
-/** 调用 chat/completions，返回整理结果。 */
+/** 调用 chat/completions，带重试，返回整理结果。 */
 export async function chatCompletion(
   config: ApiClientConfig,
   messages: ChatMessage[],
@@ -33,6 +39,32 @@ export async function chatCompletion(
       "未配置 API Key（设置 noteForge.apiKey 或环境变量 DEEPSEEK_API_KEY）",
     );
   }
+
+  let lastError: ApiError | undefined;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await sleep(1000 * 2 ** (attempt - 1)); // 1s、2s 指数退避
+    }
+    try {
+      return await chatCompletionOnce(config, messages);
+    } catch (err) {
+      lastError = err instanceof ApiError ? err : new ApiError(String(err));
+      if (!isRetryable(lastError) || attempt === MAX_RETRIES) {
+        break;
+      }
+    }
+  }
+  // 兜底：循环内总会 break（抛错）或 return（成功）。
+  throw lastError ?? new ApiError("未知错误");
+}
+
+/** 单次调用（含超时）。 */
+async function chatCompletionOnce(
+  config: ApiClientConfig,
+  messages: ChatMessage[],
+): Promise<OrganizeResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   let res: Response;
   try {
@@ -49,17 +81,20 @@ export async function chatCompletion(
         temperature: config.temperature,
         max_tokens: config.maxTokens,
       }),
+      signal: controller.signal,
     });
   } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new ApiError(`请求超时（${TIMEOUT_MS / 1000}s）`);
+    }
     throw new ApiError(`网络错误：${(err as Error)?.message ?? String(err)}`);
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new ApiError(
-      `API 请求失败（HTTP ${res.status}）：${detail.slice(0, 300)}`,
-      res.status,
-    );
+    throw new ApiError(friendlyHttpError(res.status, detail), res.status);
   }
 
   const data = (await res.json().catch(() => ({}))) as any;
@@ -80,4 +115,32 @@ export async function chatCompletion(
         }
       : undefined,
   };
+}
+
+/** 判断错误是否值得重试（网络/超时/限流/服务端错误）。 */
+function isRetryable(err: ApiError): boolean {
+  return err.status === undefined || err.status === 429 || err.status >= 500;
+}
+
+/** 把 HTTP 错误码翻译成更友好的提示。 */
+function friendlyHttpError(status: number, detail: string): string {
+  switch (status) {
+    case 401:
+      return "API Key 无效或未授权（401），请检查 noteForge.apiKey";
+    case 402:
+      return "账户余额不足（402）";
+    case 429:
+      return "请求太频繁（429），将自动重试";
+    case 500:
+    case 502:
+    case 503:
+      return `服务端错误（${status}），将自动重试`;
+    default:
+      return `API 请求失败（HTTP ${status}）：${detail.slice(0, 300)}`;
+  }
+}
+
+/** 延迟等待。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

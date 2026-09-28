@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {
@@ -33,12 +33,50 @@
         "title": "新建速记",
         "category": "Note Forge",
         "icon": "$(add)"
+      },
+      {
+        "command": "noteForge.organizeFile",
+        "title": "整理",
+        "category": "Note Forge"
+      },
+      {
+        "command": "noteForge.openTarget",
+        "title": "打开成品",
+        "category": "Note Forge"
+      },
+      {
+        "command": "noteForge.snapshot",
+        "title": "更新快照",
+        "category": "Note Forge"
+      },
+      {
+        "command": "noteForge.openSettings",
+        "title": "设置…",
+        "category": "Note Forge",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "noteForge.openDir",
+        "title": "打开文件夹",
+        "category": "Note Forge",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "noteForge.addFolder",
+        "title": "添加文件夹",
+        "category": "Note Forge",
+        "icon": "$(folder-library)"
       }
     ],
     "keybindings": [
       {
         "command": "noteForge.organize",
         "key": "ctrl+enter",
+        "when": "editorTextFocus && editorLangId =~ /^(markdown|plaintext|forge)$/"
+      },
+      {
+        "command": "noteForge.snapshot",
+        "key": "ctrl+shift+enter",
         "when": "editorTextFocus && editorLangId =~ /^(markdown|plaintext|forge)$/"
       }
     ],
@@ -111,8 +149,8 @@
     "views": {
       "noteForge": [
         {
-          "id": "noteForge.welcome",
-          "name": "速记"
+          "id": "noteForge.notes",
+          "name": "笔记"
         }
       ]
     },
@@ -120,8 +158,40 @@
       "view/title": [
         {
           "command": "noteForge.create",
-          "when": "view == noteForge.welcome",
+          "when": "view == noteForge.notes",
           "group": "navigation"
+        },
+        {
+          "command": "noteForge.addFolder",
+          "when": "view == noteForge.notes",
+          "group": "navigation"
+        },
+        {
+          "command": "noteForge.openSettings",
+          "when": "view == noteForge.notes",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "noteForge.organizeFile",
+          "when": "viewItem == noteForge.forge",
+          "group": "inline"
+        },
+        {
+          "command": "noteForge.openTarget",
+          "when": "viewItem == noteForge.forge",
+          "group": "inline"
+        },
+        {
+          "command": "noteForge.create",
+          "when": "viewItem == noteForge.dir",
+          "group": "inline"
+        },
+        {
+          "command": "noteForge.openDir",
+          "when": "viewItem == noteForge.dir",
+          "group": "inline"
         }
       ]
     }
@@ -130,6 +200,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --baseContentUrl https://example.com/note-forge --baseImagesUrl https://example.com/note-forge"
+  },
+  "dependencies": {
+    "pdfjs-dist": "3.11.174"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

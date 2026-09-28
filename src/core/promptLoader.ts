@@ -1,46 +1,22 @@
 /**
- * 定位并读取「笔记整理prompt.md」。
- * 策略：从笔记文件所在目录逐级向上查找；找不到就用内置默认 prompt 兜底。
+ * 内置 prompt：符号表从 symbols.ts 注入，是唯一的整理标准（不再查找课程 prompt）。
  */
 
-import * as fs from "fs";
-import * as path from "path";
-import { CourseResolution } from "../types";
 import { SYMBOLS } from "./symbols";
 
-const PROMPT_FILENAME = "笔记整理prompt.md";
-
-/** 从笔记文件路径向上逐级查找 prompt 文件，返回绝对路径或 undefined。 */
-export function resolvePromptPath(notePath: string): string | undefined {
-  let dir = path.dirname(notePath);
-  for (;;) {
-    const candidate = path.join(dir, PROMPT_FILENAME);
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) {
-      return undefined; // 到根目录仍未找到
-    }
-    dir = parent;
-  }
+/** 读取唯一的整理 prompt（内置默认 + 权威符号表）。 */
+export function readPromptText(): string {
+  return injectSymbolTable(DEFAULT_PROMPT);
 }
 
-/** 解析课程 prompt：找到则记录路径与课程名，否则标记为内置默认。 */
-export function loadPrompt(notePath: string): CourseResolution {
-  const promptPath = resolvePromptPath(notePath);
-  if (promptPath) {
-    return { promptPath, courseName: path.basename(path.dirname(promptPath)) };
+/** 用 symbols.ts 的最新符号表替换 prompt 里的「# 符号表」段；没有则追加。 */
+function injectSymbolTable(prompt: string): string {
+  const section = `# 符号表（权威，以本表为准）\n${buildSymbolTableMarkdown()}`;
+  const re = /^# 符号表[\s\S]*?(?=^# \S|\z)/m;
+  if (re.test(prompt)) {
+    return prompt.replace(re, () => section);
   }
-  return { promptPath: "", courseName: "内置默认" };
-}
-
-/** 读取 prompt 文本；无课程 prompt 时返回内置默认。 */
-export function readPromptText(resolution: CourseResolution): string {
-  if (resolution.promptPath && fs.existsSync(resolution.promptPath)) {
-    return fs.readFileSync(resolution.promptPath, "utf-8");
-  }
-  return DEFAULT_PROMPT;
+  return `${prompt.trim()}\n\n${section}\n`;
 }
 
 /** 用符号定义生成符号表 Markdown（与 symbols.ts 保持单一事实来源）。 */
@@ -55,24 +31,46 @@ function buildSymbolTableMarkdown(): string {
 export const DEFAULT_PROMPT = `# 角色
 你是课堂笔记整理助手，把碎片速记重构为结构清晰、逻辑完整、阅读流畅的层级笔记。
 
-# 标记规则
-标记符号只在行首生效：单行 \`符号 内容\`；多行块 \`符号{ ... }\`；可叠加 \`!?\`；\`\\X\` 转义为字面符号。
+# 标记规则（所有标记只在行首生效）
+- 一行的第一个非空白字符是标记符号才算标记；其余位置（句尾、词尾、数字里）一律当正文。
+- 单行：\`符号 内容\`；多行块：\`符号(\` 开头、\`)\` 独占一行结尾，整个块归该符号管（\`(\` 紧贴符号、不支持嵌套）。
+- 可叠加：\`!?\`、\`~#\`，各规则同时生效。
+- 转义：\`\\X\` 是字面字符，非标记。
+- 默认（不加符号）时，所有速记都会被补全、展开、结构化，无需标记；符号只用于标记「非默认」的特殊处理。
+- \`@\` 后跟「本地文件路径（绝对 / 相对）或 URL」= 引用外部资料：本地路径的内容会作为「参考材料」附在本次任务下方，请据此补充 / 对照，并在成品中标明来源。
+- \`$\` 后跟术语 = 给出该术语的「严格定义」+ 一句「通俗解释」。
+
+# 层级规则（Python 式缩进）
+- 行首缩进表示从属层级：无缩进是一级要点；每缩进一级（建议 2 空格，一门课内统一即可）表示「从属于上方最近、更浅一级」的要点。
+- 子层是对父层要点的追问、补充、举例、深挖等；整理时作为父层的缩进子条，保持从属关系、不要提升为同级标题；可任意层级嵌套。
+- 子层可带标记符号（照常处理），也可不带（视为普通补充）。
+- 示例：
+  ! 主定理
+    ? 三个 case 怎么判断
+    # 证明思路
+      = 归并排序 T(n)=2T(n/2)+O(n)
 
 # 符号表
 ${buildSymbolTableMarkdown()}
 
-# 公式
-公式一律用 LaTeX：行内 \`$...$\`，独立 \`$$...$$\`。
+# 公式规范
+- 公式一律用 LaTeX：行内 \`$...$\`，独立公式 \`$$...$$\`；每条公式单独一行，不折行。
 
 # 纠错
-发现笔误/错误结论/公式/术语必须指出：原处标【纠错】+正确表述，不改动原错误内容；文末汇总「纠错清单」。
+- 发现笔记中的明显错误（笔误、错误结论/公式/术语）必须指出：在原处标【纠错】并给出正确表述，不改动原错误内容；文末汇总「纠错清单」。
 
-# 结构
-- 标题 # 章 / ## 节 / ### 小节。
-- 要点一律用无序列表 \`-\`，不编号。
-- 同主题合并，避免过度拆分。
-- 按知识逻辑组织，不必照抄原文顺序；不改变原意、不删有效信息、不凭空编造。
-- 补全标【补】，【详解】作缩进子条，疑问/思考用引用块 \`>\`。
+# 参考课件
+- 以笔记为主；\`课件/\` 的 PPT 可作参考：核实术语、补全结构缺项、校正笔误，补出内容标【补】并注明（课件）。
+- 笔记与课件冲突时以笔记为准，并标注分歧点。
+
+# 结构与格式
+- 编号只给「标题」：\`#\` 一级章节（1、2、3…）、\`##\` 二级小节（1.1、2.1…）、\`###\` 三级（1.1.1，尽量少用）；标题写法如 \`# 1 本讲目标\`、\`## 2.1 最好情况\`。
+- 正文要点一律用无序列表 \`-\`，不要给每个句子/要点编号；并列的点用 \`-\`，只有真正的从属主题才用下级标题。
+- 相邻同主题的短句合并成一个要点，避免一行一个编号、过度拆分。
+- 按讲课主线组织（定义→分类→性质→操作→应用→总结）。
+- 正文主句连贯陈述；【补】【纠错】紧跟句后，【详解】作缩进子条；疑问与回答、思考用引用块 \`>\` 附在要点下。
+- 结构明显缺项按常规知识结构补全并标【补】；不改变原意、不删有效信息、不凭空编造。
 
 # 输出
-直接输出完整 Markdown（从第一个 # 到文末清单），不加解释、不用代码围栏。文末依次附：重点清单、疑问解答清单、纠错清单、结构补全说明（用了 @ 再加外查来源清单）。`;
+- 直接输出完整 Markdown（从第一个 # 到文末清单结束），不解释、不用代码围栏包裹。
+- 文末依次附：「重点清单」「疑问解答清单」「纠错清单」「结构补全说明」；使用过 \`@\` 时再附「外查来源清单」。`;

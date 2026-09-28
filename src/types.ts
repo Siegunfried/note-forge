@@ -22,10 +22,3 @@ export interface OrganizeResult {
   };
 }
 
-/** 课程 prompt 的解析结果。 */
-export interface CourseResolution {
-  /** 笔记整理prompt.md 的绝对路径；为空表示未找到、将用内置默认。 */
-  promptPath: string;
-  /** 课程目录名（用于提示），未找到时为「内置默认」。 */
-  courseName: string;
-}

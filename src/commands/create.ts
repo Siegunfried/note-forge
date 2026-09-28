@@ -4,6 +4,8 @@
  */
 
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 
 export async function createNote(): Promise<void> {
   const picked = await vscode.window.showSaveDialog({
@@ -19,6 +21,18 @@ export async function createNote(): Promise<void> {
   const target = picked.fsPath.toLowerCase().endsWith(".forge")
     ? picked
     : vscode.Uri.file(`${picked.fsPath}.forge`);
+
+  // 防覆盖：目标已存在时二次确认，避免误清空已有速记。
+  if (fs.existsSync(target.fsPath)) {
+    const choice = await vscode.window.showWarningMessage(
+      `「${path.basename(target.fsPath)}」已存在，新建会把它清空。`,
+      { modal: true },
+      "仍然覆盖",
+    );
+    if (choice !== "仍然覆盖") {
+      return;
+    }
+  }
 
   await vscode.workspace.fs.writeFile(target, Buffer.from(""));
   const doc = await vscode.workspace.openTextDocument(target);

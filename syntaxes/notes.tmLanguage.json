@@ -2,7 +2,7 @@
   "scopeName": "inline.note-forge",
   "patterns": [
     {
-      "match": "^[ \\t]*([_?!~%#@=&]+)(?=\\s|\\{|$)",
+      "match": "^[ \\t]*([_?!~%#@=&$]+)(?=\\s|\\{|$)",
       "captures": {
         "1": {
           "patterns": [
@@ -13,6 +13,7 @@
             { "name": "keyword.note-forge.explain", "match": "#" },
             { "name": "entity.name.type.note-forge.web", "match": "@" },
             { "name": "variable.note-forge.verbatim", "match": "=" },
+            { "name": "keyword.note-forge.definition", "match": "\\$" },
             { "name": "entity.name.function.note-forge.compare", "match": "&" },
             { "name": "markup.italic.note-forge.fill", "match": "_" }
           ]
