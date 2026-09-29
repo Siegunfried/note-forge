@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {

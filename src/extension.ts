@@ -5,7 +5,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { organizeActiveNote, updateSnapshot, migrateSnapshotsOnRename } from "./commands/organize";
+import { organizeActiveNote, updateSnapshot, migrateNodeStoresOnRename } from "./commands/organize";
 import { createNote } from "./commands/create";
 import { openSettingsMenu } from "./commands/settings";
 import { NotesTreeProvider } from "./views/notesTree";
@@ -103,7 +103,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // 文件移动 / 重命名时精确迁移快照路径，保证增量在移动后仍可用。
   context.subscriptions.push(
     vscode.workspace.onDidRenameFiles((e) =>
-      migrateSnapshotsOnRename(context.globalState, e),
+      migrateNodeStoresOnRename(context.globalState, e),
     ),
   );
 
