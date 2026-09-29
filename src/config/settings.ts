@@ -26,8 +26,8 @@ export function getSettings(): ExtensionSettings {
       "apiBaseUrl",
       "https://api.deepseek.com/chat/completions",
     ),
-    model: config.get<string>("model", "deepseek-chat"),
-    maxTokens: config.get<number>("maxTokens", 8192),
+    model: config.get<string>("model", "deepseek-flash"),
+    maxTokens: config.get<number>("maxTokens", 16384),
     temperature: config.get<number>("temperature", 0.3),
   };
 }

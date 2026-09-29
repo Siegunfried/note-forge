@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {
@@ -66,6 +66,12 @@
         "title": "添加文件夹",
         "category": "Note Forge",
         "icon": "$(folder-library)"
+      },
+      {
+        "command": "noteForge.closeFolder",
+        "title": "关闭此文件夹",
+        "category": "Note Forge",
+        "icon": "$(remove)"
       }
     ],
     "keybindings": [
@@ -107,13 +113,13 @@
         },
         "noteForge.model": {
           "type": "string",
-          "default": "deepseek-chat",
-          "description": "模型名。"
+          "default": "deepseek-flash",
+          "description": "模型名（DeepSeek V4：deepseek-v4-flash / deepseek-v4-pro）。"
         },
         "noteForge.maxTokens": {
           "type": "number",
-          "default": 8192,
-          "description": "单次输出 token 上限。"
+          "default": 16384,
+          "description": "单次输出 token 上限（推理模型需预留推理 token）。"
         },
         "noteForge.temperature": {
           "type": "number",
@@ -190,6 +196,11 @@
         },
         {
           "command": "noteForge.openDir",
+          "when": "viewItem == noteForge.dir",
+          "group": "inline"
+        },
+        {
+          "command": "noteForge.closeFolder",
           "when": "viewItem == noteForge.dir",
           "group": "inline"
         }

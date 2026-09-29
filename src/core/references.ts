@@ -18,6 +18,20 @@ export interface Reference {
   error?: string;
 }
 
+/** 参考材料长度上限（字符，约 5000 token）；过长的 PDF/文档截断，避免撑爆 prompt 拖慢请求。 */
+const MAX_REFERENCE_CHARS = 20000;
+
+/** 截断过长的参考材料，并在末尾标注。 */
+function truncateReference(content: string): string {
+  if (content.length <= MAX_REFERENCE_CHARS) {
+    return content;
+  }
+  return (
+    content.slice(0, MAX_REFERENCE_CHARS) +
+    `\n\n…（参考材料过长，已截断，仅保留前 ${MAX_REFERENCE_CHARS} 字符）`
+  );
+}
+
 /** 从速记文本提取所有 `@ 路径` 引用（仅行首单行 `@ xxx`）。 */
 export function extractReferences(rawText: string): string[] {
   const sources: string[] = [];
@@ -49,7 +63,7 @@ export async function loadReferences(
     const abs = path.isAbsolute(s) ? s : path.resolve(baseDir, s);
     try {
       const content = await readFileText(abs);
-      refs.push({ source: abs, content, isFile: true });
+      refs.push({ source: abs, content: truncateReference(content), isFile: true });
     } catch (err) {
       refs.push({
         source: abs,

@@ -23,13 +23,13 @@ export const SYMBOLS: SymbolDef[] = [
   { char: "_", name: "补全",   meaning: "没记完 / 没记全",     action: "按常规结构补全",         annotation: "【补】",       color: "#9a9a9a" },
   { char: "?", name: "疑问",   meaning: "有疑问 / 拿不准",     action: "详细解答 + 注明依据",     annotation: "【答】/【待确认】", color: "#ce9178" },
   { char: "!", name: "重点",   meaning: "重点",                 action: "加粗突出，不得丢失",     annotation: "【重点】",     color: "#c586c0" },
-  { char: "~", name: "公式化", meaning: "大概意思 / 粗略记法", action: "转写成严格公式",         annotation: "【公式化】",   color: "#b5cea8" },
+  { char: "~", name: "公式化", meaning: "大概意思 / 粗略记法", action: "命题/公式→数学·逻辑符号严格表示；代码→封装成代码块",         annotation: "【公式化】",   color: "#b5cea8" },
   { char: "%", name: "思考",   meaning: "自己的思考 / 批注",   action: "转成注释（引用块）",     annotation: "【思考】",     color: "#6a9955" },
-  { char: "#", name: "深挖",   meaning: "想特别深入展开这个点", action: "额外补背景/原理推导/易错点/延伸阅读", annotation: "【详解】", color: "#569cd6" },
+  { char: "#", name: "深挖",   meaning: "想特别深入展开这个点", action: "按内容深化：函数→语法·用法·注意事项；代码→分析结构与作用；证明→数学语言严格证明", annotation: "【详解】", color: "#569cd6" },
   { char: "@", name: "引用",   meaning: "引用外部资料（本地路径 / URL）", action: "读取/检索该资料并据其补充，标来源", annotation: "【外查】", color: "#4ec9b0" },
   { char: "=", name: "举例",   meaning: "举例说明",             action: "补充 / 整理具体例子",     annotation: "【例】",       color: "#9cdcfe" },
   { char: "$", name: "定义",   meaning: "要严格定义",           action: "给出严格定义 + 通俗解释",  annotation: "【定义】",     color: "#d7ba7d" },
-  { char: "&", name: "对比",   meaning: "易混淆 / 需对比",     action: "生成对比表",             annotation: "【对比】",     color: "#dcdcaa" },
+  { char: "&", name: "对比",   meaning: "易混淆 / 需对比",     action: "必须生成对比表",             annotation: "【对比】",     color: "#dcdcaa" },
 ];
 
 /** 所有符号字符连成串，用于构造正则（这些字符在字符类里均为字面量，无需转义）。 */

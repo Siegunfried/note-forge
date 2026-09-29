@@ -21,13 +21,13 @@ import { ApiError, ApiClientConfig, chatCompletion } from "../core/apiClient";
 import { resolvePairing, Pairing } from "../core/pairing";
 import {
   diffAppend,
-  diffIncremental,
   extractOutline,
   buildIncrementalPrompt,
   parseIncrementalResult,
   insertIntoMarkdown,
 } from "../core/incremental";
 import { OrganizeResult } from "../types";
+import { estimateCost } from "../core/pricing";
 
 const SNAPSHOT_KEY = "noteForge.snapshots";
 
@@ -94,23 +94,32 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
         );
       } else if (snapshot === rawText) {
         diag().appendLine(`[增量] 跳过：原文与上次快照一致，无新增内容`);
+        const force = await vscode.window.showInformationMessage(
+          "没有更改，已跳过整理。",
+          "仍然整理",
+        );
+        if (force !== "仍然整理") {
+          return;
+        }
       } else {
-        const added = diffIncremental(snapshot, rawText);
-        if (!added) {
-          diag().appendLine(`[增量] 跳过：检测到修改/删除已有内容（非追加、非插入缩进子层），回退整篇`);
+        // 只有「纯尾部追加」才走增量（新增内容天然在文末）；中间插入 / 修改 / 删除都回退整篇，
+        // 因为增量只能往已有标题下插片段，无法把新内容插到中间，AI 猜 anchor 会落到尾部。
+        const append = diffAppend(snapshot, rawText);
+        if (!append.isAppend || !append.added.trim()) {
+          diag().appendLine(`[增量] 跳过：非纯尾部追加（中间插入 / 修改 / 删除），回退整篇`);
         } else {
           const inc = await runIncremental(
             editor,
             pairing,
             promptText,
-            added,
+            append.added,
             config,
           );
           if (inc) {
             setSnapshot(state, pairing.sourcePath, rawText);
             diag().appendLine(`[增量] 成功：${pairing.sourcePath}`);
             vscode.window.showInformationMessage(
-              `增量整理完成 ✓${formatUsage(inc)}`,
+              `增量整理完成 ✓${formatUsage(inc, config.model)}`,
             );
             return;
           }
@@ -119,8 +128,7 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
       }
     }
 
-    // 整篇整理（首次 / 非纯追加 / 增量失败时兜底）。基于已有 .md 整合，避免重写丢内容。
-    const existingMd = readExistingMd(editor, pairing);
+    // 整篇整理（首次 / 非纯追加 / 增量失败时兜底）。从原文全新生成，不带已有 .md 基线。
     const references = await loadReferences(
       extractReferences(rawText),
       path.dirname(pairing.sourcePath),
@@ -130,7 +138,16 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
         location: vscode.ProgressLocation.Notification,
         title: "Note Forge 整理中…",
       },
-      () => organize(rawText, promptText, config, references, existingMd),
+      (progress) => {
+        let lastReport = 0;
+        return organize(rawText, promptText, config, references, (acc) => {
+          const now = Date.now();
+          if (now - lastReport > 300) {
+            lastReport = now;
+            progress.report({ message: `已生成 ${acc.length} 字…` });
+          }
+        });
+      },
     );
 
     await writeResult(editor, pairing, result.markdown);
@@ -138,7 +155,7 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
       setSnapshot(state, pairing.sourcePath, rawText);
     }
 
-    const usage = formatUsage(result);
+    const usage = formatUsage(result, config.model);
     const trunc = result.truncated ? " ⚠ 输出达到上限，可能被截断" : "";
     vscode.window.showInformationMessage(`整理完成 ✓${usage}${trunc}`);
   } catch (err) {
@@ -200,11 +217,24 @@ async function runIncremental(
   return result;
 }
 
-/** 格式化 token 用量提示。 */
-function formatUsage(result: OrganizeResult): string {
-  return result.usage
-    ? `（输入 ${result.usage.promptTokens} / 输出 ${result.usage.completionTokens} token）`
-    : "";
+/** 格式化 token 用量提示（含估算花费）。 */
+function formatUsage(result: OrganizeResult, model: string): string {
+  if (!result.usage) {
+    return "";
+  }
+  const tokens = `输入 ${result.usage.promptTokens} / 输出 ${result.usage.completionTokens} token`;
+  const cost = estimateCost(
+    model,
+    result.usage.promptTokens,
+    result.usage.completionTokens,
+  );
+  const costText = cost !== undefined ? `，约 ¥${formatCost(cost)}` : "";
+  return `（${tokens}${costText}）`;
+}
+
+/** 把花费格式化成可读金额（元）。 */
+function formatCost(cost: number): string {
+  return cost < 0.01 ? cost.toFixed(4) : cost.toFixed(3);
 }
 
 /** 判断 prev 是否为 current 的逐行前缀（即 current 由 prev 纯追加而来）。 */
@@ -282,24 +312,6 @@ function readSourceText(
   }
   // inline：有选区整理选区，否则全文。
   return selection.isEmpty ? doc.getText() : doc.getText(selection);
-}
-
-/** 读取已有成品（整篇整理时作为保留基线，避免重写丢内容）。 */
-function readExistingMd(
-  editor: vscode.TextEditor,
-  pairing: Pairing,
-): string {
-  if (pairing.mode === "forge") {
-    try {
-      return fs.readFileSync(pairing.targetPath, "utf-8");
-    } catch {
-      return "";
-    }
-  }
-  if (pairing.mode === "md-linked") {
-    return editor.document.getText();
-  }
-  return "";
 }
 
 /** 写回成品。 */

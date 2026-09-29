@@ -4,6 +4,7 @@
 
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as path from "path";
 import { organizeActiveNote, updateSnapshot, migrateSnapshotsOnRename } from "./commands/organize";
 import { createNote } from "./commands/create";
 import { openSettingsMenu } from "./commands/settings";
@@ -62,6 +63,30 @@ export function activate(context: vscode.ExtensionContext): void {
       const node = treeView.selection[0];
       if (node?.kind === "dir") {
         void vscode.env.openExternal(vscode.Uri.file(node.path));
+      }
+    }),
+  );
+
+  // 关闭文件夹（减号按钮）：从工作区移除该课程文件夹。用命令参数传节点，避免 selection 不可靠。
+  context.subscriptions.push(
+    vscode.commands.registerCommand("noteForge.closeFolder", (treeItem?: vscode.TreeItem) => {
+      let dirPath = treeItem?.id;
+      if (!dirPath) {
+        const node = treeView.selection[0];
+        if (node?.kind === "dir") {
+          dirPath = node.path;
+        }
+      }
+      if (!dirPath) {
+        return;
+      }
+      const roots = vscode.workspace.workspaceFolders ?? [];
+      const idx = roots.findIndex((f) => {
+        const root = f.uri.fsPath;
+        return dirPath === root || dirPath!.startsWith(root + path.sep);
+      });
+      if (idx >= 0) {
+        vscode.workspace.updateWorkspaceFolders(idx, 1);
       }
     }),
   );

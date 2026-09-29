@@ -38,44 +38,64 @@ export function diffAppend(prev: string, current: string): AppendDiff {
   return { isAppend, added };
 }
 
-/** 更通用的增量 diff：识别「纯追加」和「中间插入缩进子层」两种增量。
- *  返回新增文本；无法增量（修改/删除已有行）时返回 null。 */
+/** 更通用的增量 diff：用 LCS 识别「纯新增」（追加 / 中间插入），
+ *  返回新增文本；一旦检测到删改已有行（含改写缩进子层、换序），返回 null 回退整篇。 */
 export function diffIncremental(prev: string, current: string): string | null {
   if (prev.trim() === "") {
     return current;
   }
-  const prevLines = prev.split("\n");
-  const currLines = current.split("\n");
-  let i = 0;
-  let j = 0;
-  const addedLines: string[] = [];
+  const { added, removed } = lcsDiff(prev.split("\n"), current.split("\n"));
+  if (removed.length > 0) {
+    return null; // 删 / 改了已有行，无法增量
+  }
+  const addedText = added.join("\n");
+  return addedText.trim() ? addedText : null;
+}
 
-  while (i < prevLines.length && j < currLines.length) {
-    if (normalizeLine(prevLines[i]) === normalizeLine(currLines[j])) {
-      i++;
-      j++;
-    } else if (/^[ \t]/.test(currLines[j])) {
-      // 当前行是缩进子层（插在父要点下），视为新增。
-      addedLines.push(currLines[j]);
-      j++;
-    } else {
-      // 修改了已有行，无法增量。
-      return null;
+/** 行级 LCS diff：返回 curr 相对 prev 新增的行、被删改的行（按归一化文本匹配）。
+ *  按序列匹配（非集合），对重复行也稳健；纯逻辑、无副作用。 */
+function lcsDiff(
+  prevLines: string[],
+  currLines: string[],
+): { added: string[]; removed: string[] } {
+  const n = prevLines.length;
+  const m = currLines.length;
+  const prevNorm = prevLines.map(normalizeLine);
+  const currNorm = currLines.map(normalizeLine);
+
+  // dp[i][j] = prevNorm[0..i) 与 currNorm[0..j) 的 LCS 长度。
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      if (prevNorm[i - 1] === currNorm[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
     }
   }
 
-  if (i < prevLines.length) {
-    // 删除了已有行，无法增量。
-    return null;
+  const prevInLcs = new Array(n).fill(false);
+  const currInLcs = new Array(m).fill(false);
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (prevNorm[i - 1] === currNorm[j - 1]) {
+      prevInLcs[i - 1] = true;
+      currInLcs[j - 1] = true;
+      i--;
+      j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
   }
 
-  while (j < currLines.length) {
-    addedLines.push(currLines[j]);
-    j++;
-  }
-
-  const added = addedLines.join("\n");
-  return added.trim() ? added : null;
+  return {
+    added: currLines.filter((_, idx) => !currInLcs[idx]),
+    removed: prevLines.filter((_, idx) => !prevInLcs[idx]),
+  };
 }
 
 /** 提取 markdown 的标题行（# ~ ######），拼成大纲文本。 */
@@ -149,6 +169,46 @@ export function parseIncrementalResult(raw: string): IncrementalResult | null {
   return null;
 }
 
+/** 归一化标题文本：去 markdown 强调/代码、空白、大小写差异，用于 anchor 降级匹配。 */
+function normalizeHeading(s: string): string {
+  return s
+    .replace(/[`*_~]/g, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+/** 在 markdown 行里定位 anchor 标题，三级降级：精确 → 归一化 → 互相包含。
+ *  anchor 可带 `##` 前缀（AI 可能原样返回）；找不到返回 -1。 */
+function findAnchorIndex(lines: string[], anchor: string): number {
+  const a = anchor.trim().replace(/^#{1,6}\s*/, "").trim();
+  if (!a) {
+    return -1;
+  }
+  const headings = lines
+    .map((l, idx) => ({ idx, text: l.match(/^#{1,6}\s+(.+)$/)?.[1]?.trim() ?? "" }))
+    .filter((h) => h.text !== "");
+
+  // 1) 精确匹配
+  let hit = headings.find((h) => h.text === a);
+  if (hit) return hit.idx;
+
+  // 2) 归一化匹配
+  const na = normalizeHeading(a);
+  hit = headings.find((h) => normalizeHeading(h.text) === na);
+  if (hit) return hit.idx;
+
+  // 3) 互相包含（较短一侧至少 2 字符，避免过短误匹配）
+  if (na.length >= 2) {
+    hit = headings.find((h) => {
+      const hn = normalizeHeading(h.text);
+      return hn.length >= 2 && (hn.includes(na) || na.includes(hn));
+    });
+    if (hit) return hit.idx;
+  }
+
+  return -1;
+}
+
 /** 把 content 插入到 anchor 标题所在小节末尾；anchor 找不到 / 为 END 则追加文末。 */
 export function insertIntoMarkdown(
   markdown: string,
@@ -164,10 +224,7 @@ export function insertIntoMarkdown(
   }
 
   const lines = trimmed.split("\n");
-  const anchorIdx = lines.findIndex((l) => {
-    const m = l.match(/^#{1,6}\s+(.+)$/);
-    return m ? m[1].trim() === a : false;
-  });
+  const anchorIdx = findAnchorIndex(lines, a);
 
   if (anchorIdx === -1) {
     return `${trimmed}\n\n${body}\n`;

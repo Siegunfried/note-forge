@@ -1,6 +1,6 @@
 /**
  * 笔记列表视图：扫描工作区的 .forge 文件，按目录分组展示「源 → 成品」两条数据流。
- * 顶部常驻「9 符号速查」作为速记参考。
+ * 顶部常驻符号速查；文件夹可折叠（点击左侧箭头收起/展开）。
  */
 
 import * as vscode from "vscode";
@@ -35,6 +35,7 @@ export class NotesTreeProvider implements vscode.TreeDataProvider<NoteNode> {
       );
       item.iconPath = new vscode.ThemeIcon("folder");
       item.contextValue = "noteForge.dir";
+      item.id = element.path;
       return item;
     }
 
