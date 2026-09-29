@@ -1,6 +1,7 @@
 /**
  * 节点展开：把一个 .forge 节点交给 AI，展开成一段 markdown 内容。
  * 结构由 mdAssemble 负责，这里只产出单个节点的内容。
+ * 展开时附带祖先主题链，用于消歧义 + 避免与父节点重复。
  */
 
 import { ForgeNode } from "./forgeTree";
@@ -10,12 +11,12 @@ import { Reference, buildReferenceSection } from "./references";
 /** 展开一个节点，返回该节点的 markdown 内容（子节点另算）。 */
 export async function expandNode(
   node: ForgeNode,
-  parentText: string | null,
+  ancestorTexts: string[],
   promptText: string,
   config: ApiClientConfig,
   references?: Reference[],
 ): Promise<string> {
-  const prompt = buildExpansionPrompt(promptText, node, parentText, references);
+  const prompt = buildExpansionPrompt(promptText, node, ancestorTexts, references);
   const result = await chatCompletionStream(config, [{ role: "user", content: prompt }]);
   return result.markdown.trim();
 }
@@ -23,7 +24,7 @@ export async function expandNode(
 /** 并发展开一组节点（带并发上限），返回 path → 内容。 */
 export async function expandNodes(
   nodes: ForgeNode[],
-  parentOf: (n: ForgeNode) => string | null,
+  ancestorsOf: (n: ForgeNode) => string[],
   promptText: string,
   config: ApiClientConfig,
   references?: Reference[],
@@ -39,13 +40,13 @@ export async function expandNodes(
         if (!node) {
           break;
         }
-        const parent = parentOf(node);
+        const ancestors = ancestorsOf(node);
         contents[node.path] = await expandNode(
           node,
-          parent,
+          ancestors,
           promptText,
           config,
-          parent === null ? references : undefined, // 引用只给顶层节点，避免重复大段参考材料
+          ancestors.length === 0 ? references : undefined, // 引用只给顶层节点
         );
       }
     },
@@ -58,12 +59,13 @@ export async function expandNodes(
 function buildExpansionPrompt(
   promptText: string,
   node: ForgeNode,
-  parentText: string | null,
+  ancestorTexts: string[],
   references?: Reference[],
 ): string {
-  const contextLine = parentText
-    ? `\n# 父条目（仅供理解，不要重写）\n${parentText}\n`
-    : "";
+  const contextLine =
+    ancestorTexts.length > 0
+      ? `\n# 上下文（你属于这条主题链下的子条目，只展开你这一条，不要重复父条目已讲的内容）\n主题链：${ancestorTexts.join(" → ")}\n`
+      : "";
   return [
     promptText,
     contextLine,

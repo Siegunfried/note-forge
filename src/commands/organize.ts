@@ -164,16 +164,16 @@ async function organizeTree(
   const oldRoots = oldEntry ? parseForgeTree(oldEntry.rawText) : [];
   const { changed, reused } = diffTrees(oldRoots, oldEntry?.contents ?? {}, newRoots);
 
-  // 父条目上下文映射（供子节点展开时参考）。
-  const parentText = new Map<ForgeNode, string | null>();
-  const collect = (node: ForgeNode, parent: ForgeNode | null) => {
-    parentText.set(node, parent ? parent.rawLine : null);
+  // 祖先主题链映射（供子节点展开时消歧义 + 防重复）。
+  const ancestorTexts = new Map<ForgeNode, string[]>();
+  const collect = (node: ForgeNode, ancestors: ForgeNode[]) => {
+    ancestorTexts.set(node, ancestors.map((a) => a.text));
     for (const c of node.children) {
-      collect(c, node);
+      collect(c, [...ancestors, node]);
     }
   };
   for (const r of newRoots) {
-    collect(r, null);
+    collect(r, []);
   }
 
   const references = await loadReferences(
@@ -189,7 +189,7 @@ async function organizeTree(
     async () => {
       const expanded = await expandNodes(
         changed,
-        (n) => parentText.get(n) ?? null,
+        (n) => ancestorTexts.get(n) ?? [],
         promptText,
         config,
         references,
