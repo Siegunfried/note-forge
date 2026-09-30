@@ -22,7 +22,9 @@ export function assembleMarkdown(
   const counters: number[] = [];
 
   const isHeading = (node: ForgeNode, depth: number): boolean =>
-    depth === 0 || node.children.length > 0 || node.symbol === "#";
+    node.children.length > 0 ||
+    node.symbol.includes("#") ||
+    (depth === 0 && node.symbol === "");
 
   const emit = (node: ForgeNode, depth: number) => {
     const content = (contents[node.path] ?? "").trim();

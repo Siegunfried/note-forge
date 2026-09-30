@@ -35,8 +35,10 @@ export function parseForgeTree(text: string): ForgeNode[] {
     const content = line.trim();
     const symbolMatch = content.match(new RegExp(`^[${SYMBOL_CHARS}]+`));
     const symbol = symbolMatch ? symbolMatch[0] : "";
-    if (symbol.startsWith("@")) {
-      continue; // @ 是引用指令，不是内容节点（引用由 references 单独处理）
+    // @ 引用指令（@ 后必须空格）不是内容节点，由 references 单独处理；
+    // 不带空格的 @xxx 视为普通内容行，避免静默丢弃。
+    if (/^@\s/.test(content)) {
+      continue;
     }
     const nodeText = symbol ? content.slice(symbol.length).trim() : content;
 
@@ -66,17 +68,4 @@ export function parseForgeTree(text: string): ForgeNode[] {
   }
 
   return roots;
-}
-
-/** 深度优先展开为扁平数组（含顶层）。 */
-export function flattenNodes(roots: ForgeNode[]): ForgeNode[] {
-  const out: ForgeNode[] = [];
-  const walk = (nodes: ForgeNode[]) => {
-    for (const n of nodes) {
-      out.push(n);
-      walk(n.children);
-    }
-  };
-  walk(roots);
-  return out;
 }

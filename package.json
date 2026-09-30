@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {
@@ -45,11 +45,6 @@
         "category": "Note Forge"
       },
       {
-        "command": "noteForge.snapshot",
-        "title": "更新快照",
-        "category": "Note Forge"
-      },
-      {
         "command": "noteForge.openSettings",
         "title": "设置…",
         "category": "Note Forge",
@@ -78,11 +73,6 @@
       {
         "command": "noteForge.organize",
         "key": "ctrl+enter",
-        "when": "editorTextFocus && editorLangId =~ /^(markdown|plaintext|forge)$/"
-      },
-      {
-        "command": "noteForge.snapshot",
-        "key": "ctrl+shift+enter",
         "when": "editorTextFocus && editorLangId =~ /^(markdown|plaintext|forge)$/"
       }
     ],
@@ -114,7 +104,7 @@
         "noteForge.model": {
           "type": "string",
           "default": "deepseek-flash",
-          "description": "模型名（DeepSeek V4：deepseek-v4-flash / deepseek-v4-pro）。"
+          "description": "模型名（默认 deepseek-flash；质量优先可换 deepseek-v4-pro）。"
         },
         "noteForge.maxTokens": {
           "type": "number",
@@ -208,12 +198,11 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && node scripts/gen-grammar.js",
+    "gen-grammar": "node scripts/gen-grammar.js",
     "watch": "tsc -watch -p ./",
+    "test": "tsc -p ./ && node --test \"out/**/*.test.js\"",
     "package": "vsce package --baseContentUrl https://example.com/note-forge --baseImagesUrl https://example.com/note-forge"
-  },
-  "dependencies": {
-    "pdfjs-dist": "3.11.174"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

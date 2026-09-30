@@ -8,29 +8,42 @@ import { ForgeNode } from "./forgeTree";
 import { ApiClientConfig, chatCompletionStream } from "./apiClient";
 import { Reference, buildReferenceSection } from "./references";
 
-/** 展开一个节点，返回该节点的 markdown 内容（子节点另算）。 */
+/** 单个节点的展开结果。 */
+export interface ExpandNodeResult {
+  markdown: string;
+  usage?: { promptTokens: number; completionTokens: number };
+}
+
+/** 展开单个节点。 */
 export async function expandNode(
   node: ForgeNode,
   ancestorTexts: string[],
   promptText: string,
   config: ApiClientConfig,
   references?: Reference[],
-): Promise<string> {
+): Promise<ExpandNodeResult> {
   const prompt = buildExpansionPrompt(promptText, node, ancestorTexts, references);
   const result = await chatCompletionStream(config, [{ role: "user", content: prompt }]);
-  return result.markdown.trim();
+  return { markdown: result.markdown.trim(), usage: result.usage };
 }
 
-/** 并发展开一组节点（带并发上限），返回 path → 内容。 */
+/** 一批节点的展开结果（含累计 token 用量）。 */
+export interface ExpandNodesResult {
+  contents: Record<string, string>;
+  usage: { promptTokens: number; completionTokens: number };
+}
+
+/** 并发展开一组节点（带并发上限），返回 path → 内容 与累计用量。 */
 export async function expandNodes(
   nodes: ForgeNode[],
   ancestorsOf: (n: ForgeNode) => string[],
   promptText: string,
   config: ApiClientConfig,
   references?: Reference[],
-): Promise<Record<string, string>> {
+): Promise<ExpandNodesResult> {
   const contents: Record<string, string> = {};
-  const CONCURRENCY = 5;
+  const usage = { promptTokens: 0, completionTokens: 0 };
+  const CONCURRENCY = 3; // 并发过高易触发 429 限流；配合请求重试，3 路更稳。
   const queue = [...nodes];
   const workers = Array.from(
     { length: Math.min(CONCURRENCY, queue.length) },
@@ -41,18 +54,23 @@ export async function expandNodes(
           break;
         }
         const ancestors = ancestorsOf(node);
-        contents[node.path] = await expandNode(
+        const r = await expandNode(
           node,
           ancestors,
           promptText,
           config,
           ancestors.length === 0 ? references : undefined, // 引用只给顶层节点
         );
+        contents[node.path] = r.markdown;
+        if (r.usage) {
+          usage.promptTokens += r.usage.promptTokens;
+          usage.completionTokens += r.usage.completionTokens;
+        }
       }
     },
   );
   await Promise.all(workers);
-  return contents;
+  return { contents, usage };
 }
 
 /** 拼节点展开 prompt。 */

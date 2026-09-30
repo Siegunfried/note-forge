@@ -12,8 +12,6 @@ export interface Reference {
   source: string;
   /** 本地文件读到的文本；URL 或读取失败时为空。 */
   content: string;
-  /** 是否本地文件（false = URL，交给 AI 联网）。 */
-  isFile: boolean;
   /** 读取失败原因（可选）。 */
   error?: string;
 }
@@ -57,18 +55,17 @@ export async function loadReferences(
   const refs: Reference[] = [];
   for (const s of sources) {
     if (isUrl(s)) {
-      refs.push({ source: s, content: "", isFile: false });
+      refs.push({ source: s, content: "" });
       continue;
     }
     const abs = path.isAbsolute(s) ? s : path.resolve(baseDir, s);
     try {
       const content = await readFileText(abs);
-      refs.push({ source: abs, content: truncateReference(content), isFile: true });
+      refs.push({ source: abs, content: truncateReference(content) });
     } catch (err) {
       refs.push({
         source: abs,
         content: "",
-        isFile: true,
         error: (err as Error)?.message ?? String(err),
       });
     }
@@ -134,11 +131,18 @@ async function readPdfText(filePath: string): Promise<string> {
     g.Path2D = class {};
   }
 
-  // 懒加载 pdfjs-dist，避免未安装时直接崩溃。
-  const pdfjs = require("pdfjs-dist/legacy/build/pdf.js") as PdfJsModule;
-  pdfjs.GlobalWorkerOptions.workerSrc = require.resolve(
-    "pdfjs-dist/legacy/build/pdf.worker.js",
-  );
+  // 懒加载 pdfjs-dist（可选依赖）：未安装时给出明确提示，而不是崩溃。
+  let pdfjs: PdfJsModule;
+  try {
+    pdfjs = require("pdfjs-dist/legacy/build/pdf.js") as PdfJsModule;
+    pdfjs.GlobalWorkerOptions.workerSrc = require.resolve(
+      "pdfjs-dist/legacy/build/pdf.worker.js",
+    );
+  } catch {
+    throw new Error(
+      "PDF 引用需要 pdfjs-dist（未安装）。请 `npm install pdfjs-dist@3.11.174` 后重新打包。",
+    );
+  }
 
   const buf = await fs.promises.readFile(filePath);
   const doc = await pdfjs.getDocument({

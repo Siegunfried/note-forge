@@ -11,7 +11,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export type PairingMode = "forge" | "md-linked" | "inline";
+type PairingMode = "forge" | "md-linked" | "inline";
 
 export interface Pairing {
   mode: PairingMode;

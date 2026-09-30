@@ -23,7 +23,6 @@ import { parseForgeTree, ForgeNode } from "../core/forgeTree";
 import { diffTrees } from "../core/treeDiff";
 import { assembleMarkdown } from "../core/mdAssemble";
 import { expandNodes } from "../core/nodeExpand";
-import { OrganizeResult } from "../types";
 import { estimateCost } from "../core/pricing";
 
 const NODE_STORE_KEY = "noteForge.nodeStores";
@@ -34,13 +33,14 @@ interface NodeStoreEntry {
   contents: Record<string, string>;
 }
 
-/** 诊断日志输出通道（写到「输出 → Note Forge」，不打扰正常使用）。 */
-let diagChannel: vscode.OutputChannel | undefined;
-function diag(): vscode.OutputChannel {
-  if (!diagChannel) {
-    diagChannel = vscode.window.createOutputChannel("Note Forge");
+/** 加载 @ 引用；有加载失败（如缺 pdfjs）时弹提示。 */
+async function loadReferencesOrWarn(rawText: string, baseDir: string) {
+  const refs = await loadReferences(extractReferences(rawText), baseDir);
+  const failed = refs.filter((r) => r.error);
+  if (failed.length > 0) {
+    vscode.window.showWarningMessage(`引用加载失败：${failed[0].error}`);
   }
-  return diagChannel;
+  return refs;
 }
 
 export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
@@ -107,8 +107,8 @@ async function organizeInline(
   config: ApiClientConfig,
 ): Promise<void> {
   const promptText = readPromptText();
-  const references = await loadReferences(
-    extractReferences(rawText),
+  const references = await loadReferencesOrWarn(
+    rawText,
     path.dirname(pairing.sourcePath),
   );
   const result = await vscode.window.withProgress(
@@ -129,7 +129,7 @@ async function organizeInline(
   );
 
   await writeResult(editor, pairing, result.markdown);
-  const usage = formatUsage(result, config.model);
+  const usage = formatUsage(result.usage, config.model);
   const trunc = result.truncated ? " ⚠ 输出达到上限，可能被截断" : "";
   vscode.window.showInformationMessage(`整理完成 ✓${usage}${trunc}`);
 }
@@ -176,52 +176,52 @@ async function organizeTree(
     collect(r, []);
   }
 
-  const references = await loadReferences(
-    extractReferences(rawText),
+  const references = await loadReferencesOrWarn(
+    rawText,
     path.dirname(pairing.sourcePath),
   );
 
-  const contents = await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: "Note Forge 整理中…",
-    },
-    async () => {
-      const expanded = await expandNodes(
-        changed,
-        (n) => ancestorTexts.get(n) ?? [],
-        promptText,
-        config,
-        references,
-      );
-      const merged: Record<string, string> = { ...expanded };
-      for (const [p, c] of reused) {
-        merged[p] = c;
-      }
-      return merged;
-    },
-  );
+  const { contents: expandedContents, usage: expandUsage } =
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "Note Forge 整理中…",
+      },
+      () =>
+        expandNodes(
+          changed,
+          (n) => ancestorTexts.get(n) ?? [],
+          promptText,
+          config,
+          references,
+        ),
+    );
+
+  const contents: Record<string, string> = { ...expandedContents };
+  for (const [p, c] of reused) {
+    contents[p] = c;
+  }
 
   const markdown = assembleMarkdown(newRoots, contents);
   await writeResult(editor, pairing, markdown);
   setNodeStore(state, pairing.sourcePath, { rawText, contents });
 
+  const usageText = formatUsage(expandUsage, config.model);
   vscode.window.showInformationMessage(
-    `整理完成 ✓（展开 ${changed.length} 个节点，复用 ${reused.size} 个）`,
+    `整理完成 ✓（展开 ${changed.length} 个节点，复用 ${reused.size} 个）${usageText}`,
   );
 }
 
 /** 格式化 token 用量提示（含估算花费）。 */
-function formatUsage(result: OrganizeResult, model: string): string {
-  if (!result.usage) {
+function formatUsage(
+  usage: { promptTokens: number; completionTokens: number } | undefined,
+  model: string,
+): string {
+  if (!usage) {
     return "";
   }
-  const tokens = `输入 ${result.usage.promptTokens} / 输出 ${result.usage.completionTokens} token`;
-  const cost = estimateCost(
-    model,
-    result.usage.promptTokens,
-    result.usage.completionTokens,
-  );
+  const tokens = `输入 ${usage.promptTokens} / 输出 ${usage.completionTokens} token`;
+  const cost = estimateCost(model, usage.promptTokens, usage.completionTokens);
   const costText = cost !== undefined ? `，约 ¥${formatCost(cost)}` : "";
   return `（${tokens}${costText}）`;
 }
@@ -341,27 +341,4 @@ async function replaceWholeDocument(
   await editor.edit((editBuilder) => {
     editBuilder.replace(fullRange, markdown);
   });
-}
-
-/** 「更新快照」命令：节点库已自动管理，保留此命令仅为兼容旧快捷键。 */
-export async function updateSnapshot(state: vscode.Memento): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    vscode.window.showWarningMessage("没有打开的笔记文件。");
-    return;
-  }
-  const pairing = resolvePairing(editor.document.uri.fsPath);
-  if (pairing.mode === "inline") {
-    vscode.window.showInformationMessage(
-      "当前文件没有对应的 .forge 速记，无需更新。",
-    );
-    return;
-  }
-  // 清空节点库，下次整理将全量重排。
-  const map = state.get<Record<string, NodeStoreEntry>>(NODE_STORE_KEY, {});
-  if (map[pairing.sourcePath]) {
-    delete map[pairing.sourcePath];
-    void state.update(NODE_STORE_KEY, map);
-  }
-  vscode.window.showInformationMessage("已清空节点库，下次整理将全量重排。");
 }

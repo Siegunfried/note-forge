@@ -5,7 +5,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { organizeActiveNote, updateSnapshot, migrateNodeStoresOnRename } from "./commands/organize";
+import { organizeActiveNote, migrateNodeStoresOnRename } from "./commands/organize";
 import { createNote } from "./commands/create";
 import { openSettingsMenu } from "./commands/settings";
 import { NotesTreeProvider } from "./views/notesTree";
@@ -17,9 +17,6 @@ export function activate(context: vscode.ExtensionContext): void {
       organizeActiveNote(context.globalState),
     ),
     vscode.commands.registerCommand("noteForge.create", createNote),
-    vscode.commands.registerCommand("noteForge.snapshot", () =>
-      updateSnapshot(context.globalState),
-    ),
     vscode.commands.registerCommand("noteForge.openSettings", openSettingsMenu),
   );
 

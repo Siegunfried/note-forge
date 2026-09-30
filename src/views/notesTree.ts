@@ -23,8 +23,17 @@ export class NotesTreeProvider implements vscode.TreeDataProvider<NoteNode> {
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+  private _debounceTimer: NodeJS.Timeout | undefined;
+
+  /** 防抖刷新：短时间内多次触发只重扫一次，避免每次 md/forge 变化都全量 findFiles。 */
   refresh(): void {
-    this._onDidChangeTreeData.fire();
+    if (this._debounceTimer) {
+      clearTimeout(this._debounceTimer);
+    }
+    this._debounceTimer = setTimeout(() => {
+      this._debounceTimer = undefined;
+      this._onDidChangeTreeData.fire();
+    }, 150);
   }
 
   getTreeItem(element: NoteNode): vscode.TreeItem {

@@ -8,7 +8,7 @@ import { OrganizeResult } from "../types";
 import { Reference, buildReferenceSection } from "./references";
 
 /** 组装完整提示词文本（含 @ 引用的参考材料）。结构完全由原文缩进决定，不带已有 .md 基线。 */
-export function buildFullPrompt(
+function buildFullPrompt(
   promptText: string,
   rawText: string,
   references?: Reference[],

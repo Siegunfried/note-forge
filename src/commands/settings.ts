@@ -28,15 +28,6 @@ export async function openSettingsMenu(): Promise<void> {
           "@command:noteForge.organize",
         ),
     },
-    {
-      label: "更新快照 快捷键…",
-      description: "默认 Ctrl+Shift+Enter",
-      action: () =>
-        vscode.commands.executeCommand(
-          "workbench.action.openGlobalKeybindings",
-          "@command:noteForge.snapshot",
-        ),
-    },
   ];
 
   const picked = await vscode.window.showQuickPick(items, {

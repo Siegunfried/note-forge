@@ -6,7 +6,7 @@
 
 上课时你只需要用**关键词 + 10 个符号**记下要点，按 `Ctrl+Enter`，插件会：
 
-1. 找到这门课的 `笔记整理prompt.md`（从笔记目录逐级向上查找）
+1. 用内置的整理规则（符号表 + 提示词）处理速记
 2. 把速记文本交给 DeepSeek（或任意 OpenAI 兼容接口）
 3. 返回结构完整、标注清晰的 Markdown 笔记，写到同名的 `.md` 成品（你的 `.forge` 原样保留）
 
@@ -16,7 +16,7 @@
 
 - 🎨 **符号高亮**：10 个标记符号在行首自动着色（颜色跟随当前主题）
 - 🔀 **两条数据流**：速记存 `.forge`，成品生成到同名 `.md`，两者永不互相覆盖
-- 📁 **自动定位课程 prompt**：无需配置课程，从笔记路径向上找 `笔记整理prompt.md`
+- 📁 **内置整理规则**：符号表与提示词随扩展内置，无需配置
 - 🔌 **可换模型**：默认 DeepSeek，也可指向任意 OpenAI 兼容接口
 
 ## 两条数据流
@@ -66,7 +66,7 @@ npm run compile
 | `noteForge.apiKey` | （空） | API Key；留空时读环境变量 `DEEPSEEK_API_KEY` |
 | `noteForge.apiBaseUrl` | `https://api.deepseek.com/chat/completions` | OpenAI 兼容地址 |
 | `noteForge.model` | `deepseek-flash` | 模型名（快；质量优先可换 `deepseek-v4-pro`） |
-| `noteForge.maxTokens` | `8192` | 单次输出 token 上限 |
+| `noteForge.maxTokens` | `16384` | 单次输出 token 上限 |
 | `noteForge.temperature` | `0.3` | 采样温度 |
 
 ## 项目结构（模块分层）
@@ -77,8 +77,8 @@ src/
 ├─ types.ts               # 共享类型
 ├─ config/settings.ts     # 配置读取
 ├─ core/                  # 纯逻辑，无 VSCode 依赖，可单测
-│  ├─ symbols.ts          # 9 符号唯一定义（单一事实来源）
-│  ├─ promptLoader.ts     # 定位/读取课程 prompt
+│  ├─ symbols.ts          # 10 符号唯一定义（单一事实来源）
+│  ├─ promptLoader.ts     # 内置 prompt（符号表注入）
 │  ├─ apiClient.ts        # HTTP 客户端
 │  ├─ organizer.ts        # 编排：拼提示词 → 调 API
 │  └─ pairing.ts          # 判定源 .forge / 成品 .md 配对
@@ -89,8 +89,8 @@ syntaxes/
 
 ## 已知边界
 
-- `@` 本地文件引用已支持（md / txt / PDF）；**URL 联网检索尚未接入**，会留空交给模型，真正的联网检索在 Roadmap。
-- 高亮色由主题决定（用的是通用 TextMate 作用域）；自定义 9 色见 Roadmap。
+- `@` 本地文件引用支持 md / txt；**PDF 引用需额外安装 `pdfjs-dist`**（`npm install pdfjs-dist`，默认不打包以减小体积）。URL 联网检索尚未接入，见 Roadmap。
+- 高亮色由主题决定（用的是通用 TextMate 作用域）；自定义 10 色见 Roadmap。
 - 打开「整理后」的 Markdown 时，行首 `#` 标题也会被当作「详解」高亮——这是行首约定的固有权衡。
 
 ## Roadmap
@@ -98,7 +98,7 @@ syntaxes/
 - [ ] 课件/教材 RAG 检索（让补全更准）
 - [ ] `@` 联网检索
 - [ ] 素材面板 / 双栏预览（Webview）
-- [ ] 语义级着色（自定义 9 色，摆脱主题依赖）
+- [ ] 语义级着色（自定义 10 色，摆脱主题依赖）
 
 ## License
 
