@@ -24,6 +24,7 @@ import { diffTrees } from "../core/treeDiff";
 import { assembleMarkdown } from "../core/mdAssemble";
 import { expandNodes } from "../core/nodeExpand";
 import { estimateCost } from "../core/pricing";
+import { validateSyntax } from "../core/validateSyntax";
 
 const NODE_STORE_KEY = "noteForge.nodeStores";
 
@@ -61,6 +62,22 @@ export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
         : "原文速记（.forge）为空，没什么可整理的。",
     );
     return;
+  }
+
+  // 整理前汇总检查：.forge 有符号组合错误时提示（波浪线已实时标出，这里再拦一道）。
+  if (pairing.mode !== "inline") {
+    const issues = validateSyntax(rawText);
+    if (issues.length > 0) {
+      const first = issues[0];
+      const choice = await vscode.window.showWarningMessage(
+        `速记有 ${issues.length} 处符号组合错误（如第 ${first.line + 1} 行：${first.message}），建议先修正。`,
+        "仍然整理",
+        "取消",
+      );
+      if (choice !== "仍然整理") {
+        return;
+      }
+    }
   }
 
   const settings = getSettings();
@@ -186,16 +203,37 @@ async function organizeTree(
       {
         location: vscode.ProgressLocation.Notification,
         title: "Note Forge 整理中…",
+        cancellable: true,
       },
-      () =>
-        expandNodes(
+      (progress, token) => {
+        const signal = { cancelled: false };
+        token.onCancellationRequested(() => {
+          signal.cancelled = true;
+        });
+        return expandNodes(
           changed,
           (n) => ancestorTexts.get(n) ?? [],
           promptText,
           config,
           references,
-        ),
+          (done, total, lastText) => {
+            const pct = Math.round((done / total) * 100);
+            const label = lastText.length > 24 ? `${lastText.slice(0, 24)}…` : lastText;
+            progress.report({
+              message: `已完成 ${done}/${total} 个节点（${pct}%）｜${label}`,
+              increment: total > 0 ? (1 / total) * 100 : undefined,
+            });
+          },
+          signal,
+        );
+      },
     );
+
+  if (Object.keys(expandedContents).length === 0 && changed.length > 0) {
+    // 全部节点都被取消（或没有产出内容）：不写回，避免用空内容覆盖成品。
+    vscode.window.showWarningMessage("已取消整理，未写入成品。");
+    return;
+  }
 
   const contents: Record<string, string> = { ...expandedContents };
   for (const [p, c] of reused) {

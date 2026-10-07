@@ -15,7 +15,7 @@ test("顶层话题节点生成标题且编号递增", () => {
   const md = assembleMarkdown(roots, {
     "0": "定义内容",
     "0.0": "- 例：an=n^2",
-    "1": "深挖内容",
+    "1": "标题内容",
   });
   ok(md.includes("# 1 序列"));
   ok(md.includes("# 2 函数"));
@@ -26,4 +26,45 @@ test("空内容不产生空标题", () => {
   const roots = parseForgeTree("# 快排");
   const md = assembleMarkdown(roots, { "0": "" });
   equal(md.trim(), "# 1 快排");
+});
+
+test("顶层 $ 定义（无子节点）也生成标题", () => {
+  const roots = parseForgeTree("$ 群的定义");
+  const md = assembleMarkdown(roots, { "0": "定义内容" });
+  ok(md.includes("# 1 群的定义"));
+});
+
+test("疑问（?）作为批注用引用块包裹，不升级成标题", () => {
+  const roots = parseForgeTree("$ 集合\n  ? 怎么证单射满射");
+  const md = assembleMarkdown(roots, {
+    "0": "集合的定义",
+    "0.0": "> 单射满射的证明如下……",
+  });
+  ok(md.includes("# 1 集合"), "集合应是标题");
+  ok(md.includes("> 单射满射的证明如下……"), "疑问应以引用块输出");
+  ok(!md.includes("# 1.1"), "疑问不应生成子标题");
+});
+
+test("思考（%）作为批注用引用块包裹，不升级成标题", () => {
+  const roots = parseForgeTree("# 算法\n  % 我觉得复杂度是 O(n^2)");
+  const md = assembleMarkdown(roots, {
+    "0": "算法概述",
+    "0.0": "> 我推测复杂度是 O(n^2)……",
+  });
+  ok(md.includes("# 1 算法"));
+  ok(md.includes("> 我推测复杂度是 O(n^2)……"));
+  ok(!md.includes("# 1.1"), "思考不应生成子标题");
+});
+
+test("批注节点带子内容也整体归入引用块，不升级", () => {
+  const roots = parseForgeTree("$ 集合\n  ? 为什么\n    % 我的猜测");
+  const md = assembleMarkdown(roots, {
+    "0": "集合的定义",
+    "0.0": "> 为什么这样……",
+    "0.0.0": "> 我的猜测是……",
+  });
+  ok(md.includes("# 1 集合"));
+  ok(md.includes("> 为什么这样……"), "疑问应进引用块");
+  ok(md.includes("> 我的猜测是……"), "思考子内容也应进引用块");
+  ok(!md.includes("# 1.1"), "批注及其子树都不应生成标题");
 });

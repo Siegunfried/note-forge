@@ -10,8 +10,16 @@ import { createNote } from "./commands/create";
 import { openSettingsMenu } from "./commands/settings";
 import { NotesTreeProvider } from "./views/notesTree";
 import { resolvePairing } from "./core/pairing";
+import {
+  initDiagnostics,
+  refreshDiagnostics,
+  clearDiagnostics,
+} from "./commands/diagnostics";
 
 export function activate(context: vscode.ExtensionContext): void {
+  // 语法诊断：.forge 文件的符号组合错误 → 实时波浪线 + 问题面板。
+  initDiagnostics(context);
+
   context.subscriptions.push(
     vscode.commands.registerCommand("noteForge.organize", () =>
       organizeActiveNote(context.globalState),
@@ -96,6 +104,18 @@ export function activate(context: vscode.ExtensionContext): void {
   mdWatcher.onDidCreate(() => provider.refresh());
   mdWatcher.onDidDelete(() => provider.refresh());
   context.subscriptions.push(forgeWatcher, mdWatcher);
+
+  // 语法诊断：打开 / 修改 .forge 时实时校验；关闭时清理。同时校验已打开的 .forge。
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(refreshDiagnostics),
+    vscode.workspace.onDidChangeTextDocument((e) =>
+      refreshDiagnostics(e.document),
+    ),
+    vscode.workspace.onDidCloseTextDocument(clearDiagnostics),
+  );
+  for (const doc of vscode.workspace.textDocuments) {
+    refreshDiagnostics(doc);
+  }
 
   // 文件移动 / 重命名时精确迁移快照路径，保证增量在移动后仍可用。
   context.subscriptions.push(

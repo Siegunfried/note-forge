@@ -33,22 +33,33 @@ export interface ExpandNodesResult {
   usage: { promptTokens: number; completionTokens: number };
 }
 
-/** 并发展开一组节点（带并发上限），返回 path → 内容 与累计用量。 */
+/** 并发展开一组节点（带并发上限），返回 path → 内容 与累计用量。
+ *  可选 onProgress 回调：每完成一个节点触发一次，携带 (done, total, lastText) 供上层显示进度。
+ *  可选 signal 取消：在每轮取节点前检查，已取消则中止（已完成的节点保留）。
+ */
 export async function expandNodes(
   nodes: ForgeNode[],
   ancestorsOf: (n: ForgeNode) => string[],
   promptText: string,
   config: ApiClientConfig,
   references?: Reference[],
+  onProgress?: (done: number, total: number, lastText: string) => void,
+  signal?: { cancelled: boolean },
 ): Promise<ExpandNodesResult> {
   const contents: Record<string, string> = {};
   const usage = { promptTokens: 0, completionTokens: 0 };
   const CONCURRENCY = 3; // 并发过高易触发 429 限流；配合请求重试，3 路更稳。
+  const total = nodes.length;
+  let completed = 0;
+
   const queue = [...nodes];
   const workers = Array.from(
     { length: Math.min(CONCURRENCY, queue.length) },
     async () => {
       while (queue.length > 0) {
+        if (signal?.cancelled) {
+          return; // 已取消：不再取新节点
+        }
         const node = queue.shift();
         if (!node) {
           break;
@@ -66,6 +77,8 @@ export async function expandNodes(
           usage.promptTokens += r.usage.promptTokens;
           usage.completionTokens += r.usage.completionTokens;
         }
+        completed++;
+        onProgress?.(completed, total, node.text || node.rawLine);
       }
     },
   );

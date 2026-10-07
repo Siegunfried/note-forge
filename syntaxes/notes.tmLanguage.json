@@ -2,7 +2,7 @@
   "scopeName": "inline.note-forge",
   "patterns": [
     {
-      "match": "^[ \\t]*([_?!~%#@=$&]+)(?=\\s|\\{|$)",
+      "match": "^[ \\t]*([_?!~%*#@=$&]+)(?=\\s|\\{|$)",
       "captures": {
         "1": {
           "patterns": [
@@ -28,6 +28,10 @@
             },
             {
               "name": "keyword.note-forge.explain",
+              "match": "\\*"
+            },
+            {
+              "name": "keyword.note-forge.heading",
               "match": "#"
             },
             {
