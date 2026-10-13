@@ -2,7 +2,7 @@
   "scopeName": "source.forge",
   "patterns": [
     {
-      "match": "^[ \\t]*([_?!~%*#@=$&]+)(?=\\s|\\{|$)",
+      "match": "^[ \\t]*([_?!~%*#@=$&+]+)(?=\\s|\\{|$)",
       "captures": {
         "1": {
           "patterns": [
@@ -49,6 +49,10 @@
             {
               "name": "entity.name.function.note-forge.compare",
               "match": "&"
+            },
+            {
+              "name": "keyword.note-forge.unclear",
+              "match": "\\+"
             }
           ]
         }

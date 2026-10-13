@@ -12,30 +12,19 @@
  * - 批注节点（含其整棵子树）→ 用 Markdown 引用块 `>` 包裹，作为所属标题下的旁注输出。
  */
 
-import { ForgeNode } from "./forgeTree";
-
-/** 是否为批注类节点（% 思考 / ? 疑问）——批注是结构性附庸，永不升级成标题。 */
-function isAnnotation(node: ForgeNode): boolean {
-  return node.symbol.includes("%") || node.symbol.includes("?");
-}
+import { ForgeNode, isAnnotationNode, isHeadingNode } from "./forgeTree";
 
 /**
  * 把树和逐节点内容拼成 Markdown。
- * contents 以节点 path 为键。
+ * contents 以节点 path 为键（正文）；titles 以节点 path 为键（书面化标题，缺省回退到 node.text）。
  */
 export function assembleMarkdown(
   roots: ForgeNode[],
   contents: Record<string, string>,
+  titles?: Record<string, string>,
 ): string {
   const blocks: string[] = [];
   const counters: number[] = [];
-
-  const isHeading = (node: ForgeNode, depth: number): boolean =>
-    !isAnnotation(node) &&
-    (node.children.length > 0 ||
-      node.symbol.includes("#") ||
-      node.symbol.includes("$") ||
-      (depth === 0 && node.symbol === ""));
 
   /** 递归收集节点（含子树）的文本行，用于把批注子树平铺成引用块。 */
   const collectText = (node: ForgeNode): string[] => {
@@ -45,7 +34,7 @@ export function assembleMarkdown(
   };
 
   const emit = (node: ForgeNode, depth: number) => {
-    if (isAnnotation(node)) {
+    if (isAnnotationNode(node)) {
       // 批注节点：整棵子树平铺成「引用块」旁注，不参与标题层级，也不再递归 emit。
       const lines = collectText(node);
       if (lines.length > 0) {
@@ -56,12 +45,13 @@ export function assembleMarkdown(
 
     const content = (contents[node.path] ?? "").trim();
 
-    if (isHeading(node, depth)) {
+    if (isHeadingNode(node, depth)) {
       counters[depth] = (counters[depth] ?? 0) + 1;
       counters.length = depth + 1;
       const level = Math.min(depth + 1, 6);
       const hashes = "#".repeat(level);
-      blocks.push(`${hashes} ${counters.join(".")} ${node.text}`);
+      const title = titles?.[node.path] ?? node.text;
+      blocks.push(`${hashes} ${counters.join(".")} ${title}`);
       if (content) {
         blocks.push(content);
       }

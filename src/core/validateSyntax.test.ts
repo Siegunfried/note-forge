@@ -63,8 +63,29 @@ test("非法：两个修饰符（!!）", () => {
   equal(validateSyntax("!! 重点重点\n").length, 1);
 });
 
-test("跳过空行和 @ 引用行", () => {
-  equal(validateSyntax("\n@ 课件.pdf\n\n# 标题\n").length, 0);
+test("@ 链接行合法，不再跳过", () => {
+  equal(validateSyntax("@ 课件.pdf\n").length, 0);
+});
+
+test("+ 没听懂标注合法：单独或用叠加内容符", () => {
+  equal(validateSyntax("+ 泰勒展开\n").length, 0);
+  equal(validateSyntax("+$ 泰勒展开\n").length, 0);
+});
+
+test("非法：两个标注符（++）", () => {
+  const issues = validateSyntax("++ 没听懂没听懂\n");
+  equal(issues.length, 1);
+  ok(issues[0].message.includes("标注"));
+});
+
+test("非法：两个内容符（@@ 两个链接）", () => {
+  const issues = validateSyntax("@@ 两个链接\n");
+  equal(issues.length, 1);
+  ok(issues[0].message.includes("内容"));
+});
+
+test("纯章节标题（##）合法，跳过结构符组合校验", () => {
+  equal(validateSyntax("## 序列\n##\n  = an=n^2\n").length, 0);
 });
 
 test("多个错误分别定位到行", () => {

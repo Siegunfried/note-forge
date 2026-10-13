@@ -68,3 +68,15 @@ test("批注节点带子内容也整体归入引用块，不升级", () => {
   ok(md.includes("> 我的猜测是……"), "思考子内容也应进引用块");
   ok(!md.includes("# 1.1"), "批注及其子树都不应生成标题");
 });
+
+test("纯章节标题（##）生成标题，使用书面化标题而非原文并跳过正文", () => {
+  const roots = parseForgeTree("## 序列的性质\n  = an=n^2");
+  const md = assembleMarkdown(
+    roots,
+    { "0.0": "- 例：an=n^2" },
+    { "0": "数列基本性质" },
+  );
+  ok(md.includes("# 1 数列基本性质"), "纯章节应使用书面化标题");
+  ok(!md.includes("序列的性质"), "原文速记标题不应直接出现在成品里");
+  ok(md.includes("- 例：an=n^2"));
+});

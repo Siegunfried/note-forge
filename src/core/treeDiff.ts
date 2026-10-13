@@ -13,8 +13,10 @@ import { ForgeNode } from "./forgeTree";
 export interface TreeDiffResult {
   /** 新树中需要重新展开的节点。 */
   changed: ForgeNode[];
-  /** 复用的内容：新路径 → 旧内容。 */
+  /** 复用的正文内容：新路径 → 旧内容。 */
   reused: Map<string, string>;
+  /** 复用的书面化标题：新路径 → 旧标题。 */
+  reusedTitles: Map<string, string>;
 }
 
 /** 扁平化条目：节点 + 直接父节点文本。 */
@@ -41,10 +43,11 @@ function keyOf(entry: FlatEntry): string {
   return `${entry.parentRaw ?? ""}\n${entry.node.rawLine}`;
 }
 
-/** 对齐旧新树：按「父文本 + 原始行」做 LCS 对齐，未变节点复用旧内容，其余重新展开。 */
+/** 对齐旧新树：按「父文本 + 原始行」做 LCS 对齐，未变节点复用旧内容/旧标题（只要有其一），其余重新展开。 */
 export function diffTrees(
   oldRoots: ForgeNode[],
   oldContents: Record<string, string>,
+  oldTitles: Record<string, string>,
   newRoots: ForgeNode[],
 ): TreeDiffResult {
   const oldFlat = flattenWithParent(oldRoots);
@@ -57,11 +60,19 @@ export function diffTrees(
       : lcsPairs(oldKeys, newKeys);
 
   const reused = new Map<string, string>();
+  const reusedTitles = new Map<string, string>();
   const reusedNewIdx = new Set<number>();
   for (const [oi, ni] of pairs) {
-    const content = oldContents[oldFlat[oi].node.path];
-    if (content !== undefined) {
-      reused.set(newFlat[ni].node.path, content);
+    const oldPath = oldFlat[oi].node.path;
+    const content = oldContents[oldPath];
+    const title = oldTitles[oldPath];
+    if (content !== undefined || title !== undefined) {
+      if (content !== undefined) {
+        reused.set(newFlat[ni].node.path, content);
+      }
+      if (title !== undefined) {
+        reusedTitles.set(newFlat[ni].node.path, title);
+      }
       reusedNewIdx.add(ni);
     }
   }
@@ -69,7 +80,7 @@ export function diffTrees(
   const changed = newFlat
     .filter((_, i) => !reusedNewIdx.has(i))
     .map((e) => e.node);
-  return { changed, reused };
+  return { changed, reused, reusedTitles };
 }
 
 /** 规模阈值：超过则改用哈希贪心匹配，避免 O(n·m) 时空爆掉。 */

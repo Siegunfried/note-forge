@@ -11,13 +11,15 @@
  */
 
 import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
 import { getSettings } from "../config/settings";
-import { readPromptText, readExpansionPromptText } from "../core/promptLoader";
+import { readPromptText } from "../core/promptLoader";
 import { organize } from "../core/organizer";
-import { extractReferences, loadReferences } from "../core/references";
-import { ApiError, ApiClientConfig } from "../core/apiClient";
+import {
+  ApiError,
+  ApiClientConfig,
+  chatCompletionStream,
+} from "../core/apiClient";
 import { resolvePairing, Pairing } from "../core/pairing";
 import { parseForgeTree, ForgeNode } from "../core/forgeTree";
 import { diffTrees } from "../core/treeDiff";
@@ -25,23 +27,23 @@ import { assembleMarkdown } from "../core/mdAssemble";
 import { expandNodes } from "../core/nodeExpand";
 import { estimateCost } from "../core/pricing";
 import { validateSyntax } from "../core/validateSyntax";
+import {
+  subtreeNodes,
+  buildReorderPrompt,
+  parseReorderPlan,
+  validateReorderPlan,
+  applyReorder,
+  ensureNoContentLoss,
+} from "../core/chapterReorder";
 
 const NODE_STORE_KEY = "noteForge.nodeStores";
+const REORDER_SNAPSHOT_KEY = "noteForge.reorderSnapshots";
 
-/** 节点库：某 .forge 上次整理成功的原文 + 逐节点内容。 */
+/** 节点库：某 .forge 上次整理成功的原文 + 逐节点内容 + 逐节点标题。 */
 interface NodeStoreEntry {
   rawText: string;
   contents: Record<string, string>;
-}
-
-/** 加载 @ 引用；有加载失败（如缺 pdfjs）时弹提示。 */
-async function loadReferencesOrWarn(rawText: string, baseDir: string) {
-  const refs = await loadReferences(extractReferences(rawText), baseDir);
-  const failed = refs.filter((r) => r.error);
-  if (failed.length > 0) {
-    vscode.window.showWarningMessage(`引用加载失败：${failed[0].error}`);
-  }
-  return refs;
+  titles: Record<string, string>;
 }
 
 export async function organizeActiveNote(state: vscode.Memento): Promise<void> {
@@ -124,10 +126,6 @@ async function organizeInline(
   config: ApiClientConfig,
 ): Promise<void> {
   const promptText = readPromptText();
-  const references = await loadReferencesOrWarn(
-    rawText,
-    path.dirname(pairing.sourcePath),
-  );
   const result = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -135,7 +133,7 @@ async function organizeInline(
     },
     (progress) => {
       let lastReport = 0;
-      return organize(rawText, promptText, config, references, (acc) => {
+      return organize(rawText, promptText, config, (acc) => {
         const now = Date.now();
         if (now - lastReport > 300) {
           lastReport = now;
@@ -159,7 +157,6 @@ async function organizeTree(
   config: ApiClientConfig,
   state: vscode.Memento,
 ): Promise<void> {
-  const promptText = readExpansionPromptText();
   const newRoots = parseForgeTree(rawText);
   if (newRoots.length === 0) {
     vscode.window.showWarningMessage("原文速记（.forge）为空，没什么可整理的。");
@@ -179,7 +176,12 @@ async function organizeTree(
   }
 
   const oldRoots = oldEntry ? parseForgeTree(oldEntry.rawText) : [];
-  const { changed, reused } = diffTrees(oldRoots, oldEntry?.contents ?? {}, newRoots);
+  const { changed, reused, reusedTitles } = diffTrees(
+    oldRoots,
+    oldEntry?.contents ?? {},
+    oldEntry?.titles ?? {},
+    newRoots,
+  );
 
   // 祖先主题链映射（供子节点展开时消歧义 + 防重复）。
   const ancestorTexts = new Map<ForgeNode, string[]>();
@@ -193,44 +195,38 @@ async function organizeTree(
     collect(r, []);
   }
 
-  const references = await loadReferencesOrWarn(
-    rawText,
-    path.dirname(pairing.sourcePath),
+  const cancelController = new AbortController();
+  const {
+    contents: expandedContents,
+    titles: expandedTitles,
+    usage: expandUsage,
+  } = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Note Forge 整理中…",
+      cancellable: true,
+    },
+    (progress, token) => {
+      token.onCancellationRequested(() => cancelController.abort());
+      return expandNodes(
+        changed,
+        (n) => ancestorTexts.get(n) ?? [],
+        config,
+        (done, total, lastText) => {
+          const pct = Math.round((done / total) * 100);
+          const label = lastText.length > 24 ? `${lastText.slice(0, 24)}…` : lastText;
+          progress.report({
+            message: `已完成 ${done}/${total} 个节点（${pct}%）｜${label}`,
+            increment: total > 0 ? (1 / total) * 100 : undefined,
+          });
+        },
+        cancelController.signal,
+      );
+    },
   );
 
-  const { contents: expandedContents, usage: expandUsage } =
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: "Note Forge 整理中…",
-        cancellable: true,
-      },
-      (progress, token) => {
-        const signal = { cancelled: false };
-        token.onCancellationRequested(() => {
-          signal.cancelled = true;
-        });
-        return expandNodes(
-          changed,
-          (n) => ancestorTexts.get(n) ?? [],
-          promptText,
-          config,
-          references,
-          (done, total, lastText) => {
-            const pct = Math.round((done / total) * 100);
-            const label = lastText.length > 24 ? `${lastText.slice(0, 24)}…` : lastText;
-            progress.report({
-              message: `已完成 ${done}/${total} 个节点（${pct}%）｜${label}`,
-              increment: total > 0 ? (1 / total) * 100 : undefined,
-            });
-          },
-          signal,
-        );
-      },
-    );
-
-  if (Object.keys(expandedContents).length === 0 && changed.length > 0) {
-    // 全部节点都被取消（或没有产出内容）：不写回，避免用空内容覆盖成品。
+  if (cancelController.signal.aborted) {
+    // 用户取消：无论已展开多少节点，都不写回，避免用残缺内容覆盖旧成品。
     vscode.window.showWarningMessage("已取消整理，未写入成品。");
     return;
   }
@@ -239,15 +235,344 @@ async function organizeTree(
   for (const [p, c] of reused) {
     contents[p] = c;
   }
+  const titles: Record<string, string> = { ...expandedTitles };
+  for (const [p, t] of reusedTitles) {
+    titles[p] = t;
+  }
 
-  const markdown = assembleMarkdown(newRoots, contents);
+  const markdown = assembleMarkdown(newRoots, contents, titles);
   await writeResult(editor, pairing, markdown);
-  setNodeStore(state, pairing.sourcePath, { rawText, contents });
+  setNodeStore(state, pairing.sourcePath, { rawText, contents, titles });
 
   const usageText = formatUsage(expandUsage, config.model);
   vscode.window.showInformationMessage(
     `整理完成 ✓（展开 ${changed.length} 个节点，复用 ${reused.size} 个）${usageText}`,
   );
+}
+
+/** 「重新生成」：仅重新展开目标 .forge 节点（及其子树），可附加用户自定义要求，其余节点复用。 */
+export async function regenerateChapter(
+  state: vscode.Memento,
+  target: { sourcePath: string; nodePath: string },
+): Promise<void> {
+  let rawText: string;
+  try {
+    rawText = fs.readFileSync(target.sourcePath, "utf-8");
+  } catch {
+    vscode.window.showWarningMessage("找不到原文速记（.forge）。");
+    return;
+  }
+  const roots = parseForgeTree(rawText);
+  const node = findNodeByPath(roots, target.nodePath);
+  if (!node) {
+    vscode.window.showWarningMessage(
+      "找不到要重新生成的目标节点，可能原文已改动，请先重新整理。",
+    );
+    return;
+  }
+
+  const requirement = await vscode.window.showInputBox({
+    prompt: "重新生成要求（可留空，按默认规则重新展开当前选中章节）",
+    placeHolder: "例：更口语化一些 / 补充更多例子 / 精简表达",
+  });
+  if (requirement === undefined) {
+    return; // 用户取消输入框
+  }
+
+  const settings = getSettings();
+  if (!settings.apiKey) {
+    const choice = await vscode.window.showErrorMessage(
+      "缺少 API Key：请在设置里填 noteForge.apiKey，或设环境变量 DEEPSEEK_API_KEY。",
+      "打开设置",
+    );
+    if (choice === "打开设置") {
+      await vscode.commands.executeCommand(
+        "workbench.action.openSettings",
+        "noteForge.apiKey",
+      );
+    }
+    return;
+  }
+  const config: ApiClientConfig = {
+    apiKey: settings.apiKey,
+    baseUrl: settings.apiBaseUrl,
+    model: settings.model,
+    temperature: settings.temperature,
+    maxTokens: settings.maxTokens,
+  };
+
+  // 目标子树（可能只是单行叶子，也可能是整个章节）。
+  const subtree = collectSubtree(node);
+
+  // 祖先主题链映射（供子节点展开时消歧义 + 防重复）。
+  const ancestorTexts = new Map<ForgeNode, string[]>();
+  const collect = (n: ForgeNode, ancestors: ForgeNode[]) => {
+    ancestorTexts.set(n, ancestors.map((a) => a.text));
+    for (const c of n.children) {
+      collect(c, [...ancestors, n]);
+    }
+  };
+  for (const r of roots) {
+    collect(r, []);
+  }
+
+  const cancelController = new AbortController();
+  const {
+    contents: newContents,
+    titles: newTitles,
+    usage,
+  } = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Note Forge 重新生成中…",
+      cancellable: true,
+    },
+    (progress, token) => {
+      token.onCancellationRequested(() => cancelController.abort());
+      return expandNodes(
+        subtree,
+        (n) => ancestorTexts.get(n) ?? [],
+        config,
+        (done, total, lastText) => {
+          const pct = Math.round((done / total) * 100);
+          const label = lastText.length > 24 ? `${lastText.slice(0, 24)}…` : lastText;
+          progress.report({
+            message: `已完成 ${done}/${total} 个节点（${pct}%）｜${label}`,
+            increment: total > 0 ? (1 / total) * 100 : undefined,
+          });
+        },
+        cancelController.signal,
+        requirement.trim() ? requirement : undefined,
+      );
+    },
+  );
+
+  if (cancelController.signal.aborted) {
+    vscode.window.showWarningMessage("已取消重新生成，未写入成品。");
+    return;
+  }
+
+  // 以旧节点库为基础，覆盖目标子树的节点，其余保持复用。
+  const oldEntry = getNodeStore(state, target.sourcePath);
+  const contents: Record<string, string> = { ...(oldEntry?.contents ?? {}) };
+  const titles: Record<string, string> = { ...(oldEntry?.titles ?? {}) };
+  for (const [p, c] of Object.entries(newContents)) {
+    contents[p] = c;
+  }
+  for (const [p, t] of Object.entries(newTitles)) {
+    titles[p] = t;
+  }
+
+  const markdown = assembleMarkdown(roots, contents, titles);
+  const pairing = resolvePairing(target.sourcePath);
+  await writeResult(undefined, pairing, markdown);
+  setNodeStore(state, target.sourcePath, { rawText, contents, titles });
+
+  const usageText = formatUsage(
+    usage.promptTokens + usage.completionTokens > 0 ? usage : undefined,
+    config.model,
+  );
+  vscode.window.showInformationMessage(
+    `重新生成完成 ✓（${subtree.length} 个节点）${usageText}`,
+  );
+}
+
+/** 「重构章节树」：仅调整选中章节子树内节点的层级与顺序，AI 按知识逻辑重排，绝不改动符号/内容。 */
+export async function reorderChapter(
+  state: vscode.Memento,
+  target: { sourcePath: string; nodePath: string },
+): Promise<void> {
+  let rawText: string;
+  try {
+    rawText = fs.readFileSync(target.sourcePath, "utf-8");
+  } catch {
+    vscode.window.showWarningMessage("找不到原文速记（.forge）。");
+    return;
+  }
+  const roots = parseForgeTree(rawText);
+  const node = findNodeByPath(roots, target.nodePath);
+  if (!node) {
+    vscode.window.showWarningMessage(
+      "找不到要重构的章节节点，可能原文已改动，请先重新整理。",
+    );
+    return;
+  }
+
+  const atoms = subtreeNodes(node);
+  if (atoms.length <= 1) {
+    vscode.window.showInformationMessage("选中的章节只有一个节点，无需重构。");
+    return;
+  }
+
+  const settings = getSettings();
+  if (!settings.apiKey) {
+    const choice = await vscode.window.showErrorMessage(
+      "缺少 API Key：请在设置里填 noteForge.apiKey，或设环境变量 DEEPSEEK_API_KEY。",
+      "打开设置",
+    );
+    if (choice === "打开设置") {
+      await vscode.commands.executeCommand(
+        "workbench.action.openSettings",
+        "noteForge.apiKey",
+      );
+    }
+    return;
+  }
+  const config: ApiClientConfig = {
+    apiKey: settings.apiKey,
+    baseUrl: settings.apiBaseUrl,
+    model: settings.model,
+    temperature: settings.temperature,
+    maxTokens: settings.maxTokens,
+  };
+
+  const prompt = buildReorderPrompt(node);
+  const cancelController = new AbortController();
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Note Forge 重构章节树中…",
+      cancellable: true,
+    },
+    (progress, token) => {
+      token.onCancellationRequested(() => cancelController.abort());
+      return chatCompletionStream(
+        config,
+        [{ role: "user", content: prompt }],
+        undefined,
+        cancelController.signal,
+      );
+    },
+  );
+
+  if (cancelController.signal.aborted) {
+    vscode.window.showWarningMessage("已取消重构，未写入任何改动。");
+    return;
+  }
+
+  // 解析 + 校验重排方案；不合法则整体放弃，不写入。
+  const plan = parseReorderPlan(result.markdown);
+  const atomPaths = new Set(atoms.map((n) => n.path));
+  const invalid = validateReorderPlan(plan, atomPaths, node.path);
+  if (invalid) {
+    vscode.window.showErrorMessage(`重构结果不合法：${invalid}，已放弃（未做任何改动）。`);
+    return;
+  }
+
+  const nextRaw = applyReorder(rawText, plan);
+  const loss = ensureNoContentLoss(rawText, nextRaw);
+  if (loss) {
+    vscode.window.showErrorMessage(`内容校验失败：${loss}，已放弃（未做任何改动）。`);
+    return;
+  }
+
+  // 写入前保存回滚快照。
+  saveReorderSnapshot(state, target.sourcePath, rawText);
+  await vscode.workspace.fs.writeFile(
+    vscode.Uri.file(target.sourcePath),
+    Buffer.from(nextRaw, "utf8"),
+  );
+
+  const usageText = formatUsage(result.usage, config.model);
+  vscode.window.showInformationMessage(
+    `章节树重构完成 ✓（重排 ${atoms.length} 个节点）${usageText}，可一键回滚。`,
+  );
+}
+
+/** 「回滚重构」：把指定 .forge 恢复到最近一次重构前的快照。 */
+export async function reorderRollback(
+  state: vscode.Memento,
+  sourcePath: string | undefined,
+): Promise<void> {
+  if (!sourcePath) {
+    vscode.window.showWarningMessage("没有可回滚的笔记：请先打开或选择要回滚的 .forge 笔记。");
+    return;
+  }
+  const map = state.get<Record<string, string>>(REORDER_SNAPSHOT_KEY, {});
+  const snapshot = map[sourcePath];
+  if (snapshot === undefined) {
+    vscode.window.showInformationMessage("当前笔记没有可回滚的重构快照。");
+    return;
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    "回滚将把章节树恢复到重构前，覆盖当前内容。",
+    "回滚",
+    "取消",
+  );
+  if (choice !== "回滚") {
+    return;
+  }
+
+  await vscode.workspace.fs.writeFile(
+    vscode.Uri.file(sourcePath),
+    Buffer.from(snapshot, "utf8"),
+  );
+  delete map[sourcePath];
+  void state.update(REORDER_SNAPSHOT_KEY, map);
+  vscode.window.showInformationMessage("已回滚到重构前。");
+}
+
+/** 保存某 .forge 的重构前快照（供回滚）。 */
+function saveReorderSnapshot(
+  state: vscode.Memento,
+  forgePath: string,
+  rawText: string,
+): void {
+  const map = state.get<Record<string, string>>(REORDER_SNAPSHOT_KEY, {});
+  map[forgePath] = rawText;
+  void state.update(REORDER_SNAPSHOT_KEY, map);
+}
+
+/** 定位光标所在 .forge 节点（仅 forge 模式；md-linked / inline 无行号对应，返回 undefined）。 */
+export function nodePathAtCursor(
+  editor: vscode.TextEditor,
+): { sourcePath: string; nodePath: string } | undefined {
+  const doc = editor.document;
+  const pairing = resolvePairing(doc.uri.fsPath);
+  if (pairing.mode !== "forge") {
+    return undefined;
+  }
+  const roots = parseForgeTree(doc.getText());
+  const node = findNodeAtLine(roots, editor.selection.active.line);
+  return node ? { sourcePath: pairing.sourcePath, nodePath: node.path } : undefined;
+}
+
+/** 深度优先按 path 查找节点。 */
+function findNodeByPath(roots: ForgeNode[], path: string): ForgeNode | undefined {
+  for (const r of roots) {
+    if (r.path === path) {
+      return r;
+    }
+    const found = findNodeByPath(r.children, path);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+/** 深度优先按 0-based 行号查找节点（精确匹配）。 */
+function findNodeAtLine(roots: ForgeNode[], line: number): ForgeNode | undefined {
+  for (const r of roots) {
+    if (r.line === line) {
+      return r;
+    }
+    const found = findNodeAtLine(r.children, line);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+/** 收集节点及其整棵子树（含自身）。 */
+function collectSubtree(node: ForgeNode): ForgeNode[] {
+  const out: ForgeNode[] = [node];
+  for (const c of node.children) {
+    out.push(...collectSubtree(c));
+  }
+  return out;
 }
 
 /** 格式化 token 用量提示（含估算花费）。 */
@@ -332,7 +657,7 @@ function readSourceText(
 
 /** 写回成品。 */
 async function writeResult(
-  editor: vscode.TextEditor,
+  editor: vscode.TextEditor | undefined,
   pairing: Pairing,
   markdown: string,
 ): Promise<void> {
@@ -340,6 +665,10 @@ async function writeResult(
     const targetUri = vscode.Uri.file(pairing.targetPath);
     await vscode.workspace.fs.writeFile(targetUri, Buffer.from(markdown, "utf8"));
     return;
+  }
+
+  if (!editor) {
+    throw new Error("没有打开的编辑器，无法写回成品。");
   }
 
   if (pairing.mode === "md-linked") {

@@ -15,10 +15,27 @@ function contentsOf(roots: ForgeNode[]): Record<string, string> {
   return c;
 }
 
+function titlesOf(roots: ForgeNode[]): Record<string, string> {
+  const t: Record<string, string> = {};
+  const walk = (nodes: ForgeNode[]) => {
+    for (const n of nodes) {
+      t[n.path] = `标题:${n.text || n.rawLine}`;
+      walk(n.children);
+    }
+  };
+  walk(roots);
+  return t;
+}
+
 test("移动到不同父节点 → 不复用旧内容（重新展开）", () => {
   const oldRoots = parseForgeTree("# 序列\n  = an=n^2\n# 函数");
   const newRoots = parseForgeTree("# 函数\n  = an=n^2\n# 序列");
-  const { changed, reused } = diffTrees(oldRoots, contentsOf(oldRoots), newRoots);
+  const { changed, reused } = diffTrees(
+    oldRoots,
+    contentsOf(oldRoots),
+    titlesOf(oldRoots),
+    newRoots,
+  );
 
   ok(changed.map((n) => n.rawLine).includes("= an=n^2"), "移动的节点应重新展开");
   ok(
@@ -30,7 +47,12 @@ test("移动到不同父节点 → 不复用旧内容（重新展开）", () => 
 test("整棵子树改缩进 → 父文本不变的子节点复用", () => {
   const oldRoots = parseForgeTree("# 快排\n  = 例子\n  & 对比");
   const newRoots = parseForgeTree("父\n  # 快排\n    = 例子\n    & 对比");
-  const { changed, reused } = diffTrees(oldRoots, contentsOf(oldRoots), newRoots);
+  const { changed, reused } = diffTrees(
+    oldRoots,
+    contentsOf(oldRoots),
+    titlesOf(oldRoots),
+    newRoots,
+  );
 
   const reusedValues = [...reused.values()];
   ok(reusedValues.includes("内容:= 例子"), "= 例子 应复用");
@@ -44,8 +66,34 @@ test("完全未变 → 全部复用", () => {
   const { changed, reused } = diffTrees(
     parseForgeTree(text),
     contentsOf(parseForgeTree(text)),
+    titlesOf(parseForgeTree(text)),
     parseForgeTree(text),
   );
   equal(changed.length, 0);
   equal(reused.size, 3);
+});
+
+test("未变节点复用书面化标题", () => {
+  const text = "## 序列的性质\n  = an=n^2";
+  const { reusedTitles } = diffTrees(
+    parseForgeTree(text),
+    contentsOf(parseForgeTree(text)),
+    titlesOf(parseForgeTree(text)),
+    parseForgeTree(text),
+  );
+  equal(reusedTitles.get("0"), "标题:序列的性质");
+  equal(reusedTitles.get("0.0"), "标题:an=n^2");
+});
+
+test("纯标题节点仅复用标题、无正文也能被识别为未变", () => {
+  const text = "## 纯章节";
+  const oldRoots = parseForgeTree(text);
+  const { changed, reusedTitles } = diffTrees(
+    oldRoots,
+    {},
+    { "0": "序列的性质" },
+    parseForgeTree(text),
+  );
+  equal(changed.length, 0, "仅有标题的节点应复用而非重新展开");
+  equal(reusedTitles.get("0"), "序列的性质");
 });

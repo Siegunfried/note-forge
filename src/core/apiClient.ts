@@ -38,6 +38,7 @@ export async function chatCompletionStream(
   config: ApiClientConfig,
   messages: ChatMessage[],
   onProgress?: (accumulatedText: string) => void,
+  signal?: AbortSignal,
 ): Promise<OrganizeResult> {
   if (!config.apiKey) {
     throw new ApiError(
@@ -45,52 +46,63 @@ export async function chatCompletionStream(
     );
   }
 
-  const res = await fetchWithRetry(
-    config,
-    JSON.stringify({
-      model: config.model,
-      messages,
-      stream: true,
-      temperature: config.temperature,
-      max_tokens: config.maxTokens,
-      // DeepSeek V4 默认开启推理(thinking)，会吃满 max_tokens 导致 content 为空；必须显式关闭。
-      thinking: { type: "disabled" },
-    }),
-  );
+  // 覆盖「请求 + 流式读取」全程的可中止信号：外部取消会转发到这里。
+  // 空闲计时器复用同一个 controller，连续无数据才中止，避免生成中途永久挂起。
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
 
-  if (!res.body) {
-    throw new ApiError("响应缺少可读取的流");
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let content = "";
-  let finishReason: string | undefined;
-  let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
-  let buffer = "";
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdle = () => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
     }
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
+    idleTimer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  };
+  armIdle();
+
+  try {
+    const res = await fetchWithRetry(
+      config,
+      JSON.stringify({
+        model: config.model,
+        messages,
+        stream: true,
+        // 请求在最后一个 chunk 返回 usage，供 token 用量与成本统计。
+        stream_options: { include_usage: true },
+        temperature: config.temperature,
+        max_tokens: config.maxTokens,
+        // DeepSeek V4 默认开启推理(thinking)，会吃满 max_tokens 导致 content 为空；必须显式关闭。
+        thinking: { type: "disabled" },
+      }),
+      controller.signal,
+    );
+
+    if (!res.body) {
+      throw new ApiError("响应缺少可读取的流");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let content = "";
+    let finishReason: string | undefined;
+    let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    let buffer = "";
+
+    const consumeLine = (line: string): void => {
       const trimmed = line.trim();
       if (!trimmed.startsWith("data:")) {
-        continue;
+        return;
       }
       const payload = trimmed.slice(5).trim();
       if (!payload || payload === "[DONE]") {
-        continue;
+        return;
       }
       let json: any;
       try {
         json = JSON.parse(payload);
       } catch {
-        continue;
+        return;
       }
       const delta = json?.choices?.[0]?.delta?.content;
       if (typeof delta === "string" && delta.length > 0) {
@@ -103,57 +115,94 @@ export async function chatCompletionStream(
       if (json?.usage) {
         usage = json.usage;
       }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      armIdle();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        consumeLine(line);
+      }
     }
-  }
+    // 收尾：冲刷解码器残留的多字节字符，并处理最后一行无换行的残余内容。
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      consumeLine(buffer);
+    }
 
-  if (!content.trim()) {
-    throw new ApiError("API 返回了空内容");
-  }
+    if (!content.trim()) {
+      if (controller.signal.aborted) {
+        throw new ApiError(
+          signal?.aborted
+            ? "整理已取消"
+            : `请求超时（${TIMEOUT_MS / 1000}s，生成过程无响应）`,
+          undefined,
+          false,
+        );
+      }
+      throw new ApiError("API 返回了空内容");
+    }
 
-  return {
-    markdown: content,
-    truncated: finishReason === "length",
-    usage: usage
-      ? {
-          promptTokens: usage.prompt_tokens ?? 0,
-          completionTokens: usage.completion_tokens ?? 0,
-        }
-      : undefined,
-  };
+    return {
+      markdown: content,
+      truncated: finishReason === "length",
+      usage: usage
+        ? {
+            promptTokens: usage.prompt_tokens ?? 0,
+            completionTokens: usage.completion_tokens ?? 0,
+          }
+        : undefined,
+    };
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new ApiError(
+        signal?.aborted
+          ? "整理已取消"
+          : `请求超时（${TIMEOUT_MS / 1000}s，生成过程无响应）`,
+        undefined,
+        false,
+      );
+    }
+    throw err;
+  } finally {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+    }
+    signal?.removeEventListener("abort", onAbort);
+  }
 }
 
-/** 发起请求并检查状态；请求阶段（网络 / 429 / 5xx）带指数退避重试，返回已确认 ok 的 Response。 */
+/** 发起请求并检查状态；请求阶段（网络 / 429 / 5xx）带指数退避重试，返回已确认 ok 的 Response。
+ *  signal 贯穿到 fetch，使外部取消能真正中止连接；一旦开始流式读取则不再重试。 */
 async function fetchWithRetry(
   config: ApiClientConfig,
   body: string,
+  signal: AbortSignal,
 ): Promise<Response> {
   let lastError: ApiError | undefined;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
       await sleep(1000 * 2 ** (attempt - 1)); // 1s、2s 指数退避
     }
+    if (signal.aborted) {
+      throw new ApiError("整理已取消", undefined, false);
+    }
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      let res: Response;
-      try {
-        res = await fetch(config.baseUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.apiKey}`,
-          },
-          body,
-          signal: controller.signal,
-        });
-      } catch (err) {
-        if ((err as Error)?.name === "AbortError") {
-          throw new ApiError(`请求超时（${TIMEOUT_MS / 1000}s）`, undefined, false);
-        }
-        throw new ApiError(`网络错误：${(err as Error)?.message ?? String(err)}`);
-      } finally {
-        clearTimeout(timer);
-      }
+      const res = await fetch(config.baseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body,
+        signal,
+      });
 
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
@@ -161,7 +210,13 @@ async function fetchWithRetry(
       }
       return res;
     } catch (err) {
-      lastError = err instanceof ApiError ? err : new ApiError(String(err));
+      if ((err as Error)?.name === "AbortError") {
+        throw new ApiError("整理已取消或超时", undefined, false);
+      }
+      lastError =
+        err instanceof ApiError
+          ? err
+          : new ApiError(`网络错误：${(err as Error)?.message ?? String(err)}`);
       if (!isRetryable(lastError) || attempt === MAX_RETRIES) {
         throw lastError;
       }
@@ -199,4 +254,92 @@ function friendlyHttpError(status: number, detail: string): string {
 /** 延迟等待。 */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 视觉请求里的图片（base64 + MIME）。 */
+export interface VisionImage {
+  base64: string;
+  mimeType: string;
+}
+
+/**
+ * 视觉多模态调用（OpenAI 兼容的图片输入，非流式）：把提示词 + 若干图片发给视觉模型，返回文本。
+ * 与 chatCompletionStream 同栈复用重试/超时；不传 stream（视觉模型往往不支持或无需）。
+ */
+export async function chatCompletionWithImages(
+  config: ApiClientConfig,
+  prompt: string,
+  images: VisionImage[],
+  signal?: AbortSignal,
+): Promise<OrganizeResult> {
+  if (!config.apiKey) {
+    throw new ApiError(
+      "未配置 API Key（设置 noteForge.apiKey 或环境变量 DEEPSEEK_API_KEY）",
+    );
+  }
+
+  const content: any[] = [{ type: "text", text: prompt }];
+  for (const img of images) {
+    content.push({
+      type: "image_url",
+      image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+    });
+  }
+
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  const idleTimer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const res = await fetchWithRetry(
+      config,
+      JSON.stringify({
+        model: config.model,
+        messages: [{ role: "user", content }],
+        temperature: config.temperature,
+        max_tokens: config.maxTokens,
+      }),
+      controller.signal,
+    );
+
+    const json: any = await res.json().catch(() => ({}));
+    const rawContent = json?.choices?.[0]?.message?.content;
+    const contentText =
+      typeof rawContent === "string"
+        ? rawContent
+        : Array.isArray(rawContent)
+          ? rawContent.map((p: any) => p?.text ?? "").join("")
+          : "";
+
+    if (!contentText.trim()) {
+      throw new ApiError("视觉模型返回了空内容");
+    }
+
+    const usage = json?.usage;
+    return {
+      markdown: contentText.trim(),
+      truncated: json?.choices?.[0]?.finish_reason === "length",
+      usage: usage
+        ? {
+            promptTokens: usage.prompt_tokens ?? 0,
+            completionTokens: usage.completion_tokens ?? 0,
+          }
+        : undefined,
+    };
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new ApiError(
+        signal?.aborted
+          ? "识别已取消"
+          : `请求超时（${TIMEOUT_MS / 1000}s）`,
+        undefined,
+        false,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(idleTimer);
+    signal?.removeEventListener("abort", onAbort);
+  }
 }

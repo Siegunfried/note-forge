@@ -3,7 +3,7 @@
 欢迎 PR。几个约定：
 
 - **分层**：纯逻辑放 `src/core/`（保持无 VSCode 依赖，便于单测）；VSCode 交互放 `src/commands/`、`src/config/`。
-- **符号单一来源**：10 个符号的定义只改 `src/core/symbols.ts` 一处；内置 prompt 与语法高亮（`syntaxes/*.tmLanguage.json`）都会在 `npm run compile` 时自动生成，无需手动同步。
+- **符号单一来源**：11 个符号的定义只改 `src/core/symbols.ts` 一处；内置 prompt 与语法高亮（`syntaxes/*.tmLanguage.json`）都会在 `npm run compile` 时自动生成，无需手动同步。
 - **提交前**：`npm run compile` 确认无类型错误，`npm test` 跑单测。
 
 ## 本地开发

@@ -1,53 +1,102 @@
 /**
- * 节点展开：把一个 .forge 节点交给 AI，展开成一段 markdown 内容。
- * 结构由 mdAssemble 负责，这里只产出单个节点的内容。
- * 展开时附带祖先主题链，用于消歧义 + 避免与父节点重复。
+ * 节点展开：把一个 .forge 节点交给 AI，产出正文内容 +（标题节点的）书面化标题。
+ * 结构由 mdAssemble 负责，这里只产出单个节点的内容与标题。
+ *
+ * AI 调用解耦：
+ * - 先独立解析当前行：符号标记（lineResolver）→ 只把「本条要求」与正文交给 AI。
+ * - 基础 prompt（LINE_BASE_PROMPT）不含符号表，符号处理模板由 buildSymbolDirective 按本条命中注入。
+ * - 严格禁止 AI 在输出里夹带符号标记（LINE_BASE_PROMPT 已写明铁律）。
+ * - 标题节点额外做一次「标题书面化」（TITLE_NORMALIZE_PROMPT），统一格式风格。
  */
 
-import { ForgeNode } from "./forgeTree";
+import { ForgeNode, isHeadingNode } from "./forgeTree";
 import { ApiClientConfig, chatCompletionStream } from "./apiClient";
-import { Reference, buildReferenceSection } from "./references";
+import { buildSymbolDirective } from "./lineResolver";
+import { LINE_BASE_PROMPT, TITLE_NORMALIZE_PROMPT } from "./promptLoader";
+
+/** token 用量（可跨多次调用累计）。 */
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+}
 
 /** 单个节点的展开结果。 */
-export interface ExpandNodeResult {
-  markdown: string;
-  usage?: { promptTokens: number; completionTokens: number };
+export interface NodeOutput {
+  /** 正文内容（纯标题 ## 节点无正文）。 */
+  content?: string;
+  /** 书面化标题（只有标题节点有）。 */
+  title?: string;
+  usage?: Usage;
 }
 
 /** 展开单个节点。 */
 export async function expandNode(
   node: ForgeNode,
   ancestorTexts: string[],
-  promptText: string,
   config: ApiClientConfig,
-  references?: Reference[],
-): Promise<ExpandNodeResult> {
-  const prompt = buildExpansionPrompt(promptText, node, ancestorTexts, references);
-  const result = await chatCompletionStream(config, [{ role: "user", content: prompt }]);
-  return { markdown: result.markdown.trim(), usage: result.usage };
+  signal?: AbortSignal,
+  extraRequirement?: string,
+): Promise<NodeOutput> {
+  const usage: Usage = { promptTokens: 0, completionTokens: 0 };
+  const add = (u?: Usage) => {
+    if (u) {
+      usage.promptTokens += u.promptTokens;
+      usage.completionTokens += u.completionTokens;
+    }
+  };
+
+  // 标题节点：先把标题文字书面化。
+  let title: string | undefined;
+  if (isHeadingNode(node, ancestorTexts.length)) {
+    const r = await normalizeTitle(node.text, config, signal);
+    add(r.usage);
+    title = r.title;
+  }
+
+  // 纯标题（##）不生成任何正文内容，仅作为结构标题。
+  let content: string | undefined;
+  if (!node.pureHeading) {
+    const r = await expandContent(
+      node,
+      ancestorTexts,
+      config,
+      signal,
+      extraRequirement,
+    );
+    add(r.usage);
+    content = r.content;
+  }
+
+  return {
+    content,
+    title,
+    usage: usage.promptTokens + usage.completionTokens > 0 ? usage : undefined,
+  };
 }
 
 /** 一批节点的展开结果（含累计 token 用量）。 */
 export interface ExpandNodesResult {
   contents: Record<string, string>;
-  usage: { promptTokens: number; completionTokens: number };
+  titles: Record<string, string>;
+  usage: Usage;
 }
 
-/** 并发展开一组节点（带并发上限），返回 path → 内容 与累计用量。
+/** 并发展开一组节点（带并发上限），返回 path → 内容、path → 标题 与累计用量。
  *  可选 onProgress 回调：每完成一个节点触发一次，携带 (done, total, lastText) 供上层显示进度。
- *  可选 signal 取消：在每轮取节点前检查，已取消则中止（已完成的节点保留）。
+ *  可选 signal 取消：在每轮取节点前检查，已取消则中止并中止在途请求（已完成的节点保留）。
+ *  可选 extraRequirement：附加自定义要求（重新生成时用户输入），注入到每个节点的 prompt。
  */
 export async function expandNodes(
   nodes: ForgeNode[],
   ancestorsOf: (n: ForgeNode) => string[],
-  promptText: string,
   config: ApiClientConfig,
-  references?: Reference[],
   onProgress?: (done: number, total: number, lastText: string) => void,
-  signal?: { cancelled: boolean },
+  signal?: AbortSignal,
+  extraRequirement?: string,
 ): Promise<ExpandNodesResult> {
   const contents: Record<string, string> = {};
-  const usage = { promptTokens: 0, completionTokens: 0 };
+  const titles: Record<string, string> = {};
+  const usage: Usage = { promptTokens: 0, completionTokens: 0 };
   const CONCURRENCY = 3; // 并发过高易触发 429 限流；配合请求重试，3 路更稳。
   const total = nodes.length;
   let completed = 0;
@@ -57,7 +106,7 @@ export async function expandNodes(
     { length: Math.min(CONCURRENCY, queue.length) },
     async () => {
       while (queue.length > 0) {
-        if (signal?.cancelled) {
+        if (signal?.aborted) {
           return; // 已取消：不再取新节点
         }
         const node = queue.shift();
@@ -65,44 +114,105 @@ export async function expandNodes(
           break;
         }
         const ancestors = ancestorsOf(node);
-        const r = await expandNode(
-          node,
-          ancestors,
-          promptText,
-          config,
-          ancestors.length === 0 ? references : undefined, // 引用只给顶层节点
-        );
-        contents[node.path] = r.markdown;
-        if (r.usage) {
-          usage.promptTokens += r.usage.promptTokens;
-          usage.completionTokens += r.usage.completionTokens;
+        try {
+          const r = await expandNode(
+            node,
+            ancestors,
+            config,
+            signal,
+            extraRequirement,
+          );
+          if (r.content !== undefined && r.content !== "") {
+            contents[node.path] = r.content;
+          }
+          if (r.title !== undefined) {
+            titles[node.path] = r.title;
+          }
+          if (r.usage) {
+            usage.promptTokens += r.usage.promptTokens;
+            usage.completionTokens += r.usage.completionTokens;
+          }
+          completed++;
+          onProgress?.(completed, total, node.text || node.rawLine);
+        } catch (err) {
+          if (signal?.aborted) {
+            return; // 取消导致在途请求中止：静默结束，不抛错
+          }
+          throw err;
         }
-        completed++;
-        onProgress?.(completed, total, node.text || node.rawLine);
       }
     },
   );
   await Promise.all(workers);
-  return { contents, usage };
+  return { contents, titles, usage };
 }
 
-/** 拼节点展开 prompt。 */
-function buildExpansionPrompt(
-  promptText: string,
+/** 标题书面化：把速记标题改写为规范书面中文标题（整个标题节点额外一次 AI 调用）。 */
+async function normalizeTitle(
+  heading: string,
+  config: ApiClientConfig,
+  signal?: AbortSignal,
+): Promise<{ title: string; usage?: Usage }> {
+  if (!heading.trim()) {
+    return { title: heading };
+  }
+  const prompt = `${TITLE_NORMALIZE_PROMPT}\n\n# 待改写的标题\n\`\`\`text\n${heading}\n\`\`\``;
+  const result = await chatCompletionStream(
+    config,
+    [{ role: "user", content: prompt }],
+    undefined,
+    signal,
+  );
+  const title =
+    result.markdown
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)[0] ?? heading;
+  return { title, usage: result.usage };
+}
+
+/** 展开正文内容：LINE_BASE_PROMPT + 本条符号要求 + 正文。 */
+async function expandContent(
   node: ForgeNode,
   ancestorTexts: string[],
-  references?: Reference[],
+  config: ApiClientConfig,
+  signal: AbortSignal | undefined,
+  extraRequirement: string | undefined,
+): Promise<{ content: string; usage?: Usage }> {
+  const prompt = buildContentPrompt(
+    node,
+    ancestorTexts,
+    extraRequirement,
+  );
+  const result = await chatCompletionStream(
+    config,
+    [{ role: "user", content: prompt }],
+    undefined,
+    signal,
+  );
+  return { content: result.markdown.trim(), usage: result.usage };
+}
+
+/** 拼正文展开 prompt：只交代「本条要求」，不塞整张符号表。 */
+function buildContentPrompt(
+  node: ForgeNode,
+  ancestorTexts: string[],
+  extraRequirement?: string,
 ): string {
   const contextLine =
     ancestorTexts.length > 0
       ? `\n# 上下文（你属于这条主题链下的子条目，只展开你这一条，不要重复父条目已讲的内容）\n主题链：${ancestorTexts.join(" → ")}\n`
       : "";
+  const extra = extraRequirement?.trim()
+    ? `\n# 附加要求（用户指定，必须遵守）\n${extraRequirement.trim()}\n`
+    : "";
   return [
-    promptText,
+    LINE_BASE_PROMPT,
     contextLine,
-    buildReferenceSection(references),
-    "# 任务",
-    "把下面这一条速记展开成一段 markdown 内容：按符号生成 - 列表 / 代码块 / 对比表，并加必要标注，只输出这一段本身，不要标题、不要 JSON、不要围栏包裹。",
+    extra,
+    "# 本条要求",
+    buildSymbolDirective(node.symbol),
+    "# 待展开的速记",
     "```text",
     node.rawLine,
     "```",

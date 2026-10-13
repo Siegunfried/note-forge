@@ -10,7 +10,8 @@
  * 注意：这里只校验「符号组合」，不校验缩进层级（缩进跳级等属于树解析层）。
  */
 
-import { SYMBOL_BY_CHAR, SymbolKind } from "./symbols";
+import { SYMBOL_BY_CHAR, SYMBOL_CHARS, SymbolKind } from "./symbols";
+import { PURE_HEADING_MARK } from "./forgeTree";
 
 /** 一类符号最多允许的个数。 */
 const KIND_MAX: Record<SymbolKind, number> = {
@@ -18,6 +19,7 @@ const KIND_MAX: Record<SymbolKind, number> = {
   content: 1,
   form: 1,
   emphasis: 1,
+  flag: 1,
 };
 
 /** 语法错误。 */
@@ -47,20 +49,20 @@ export function validateSyntax(text: string): SyntaxIssue[] {
       continue; // 空行跳过
     }
 
+    // 纯章节标题（##）合法：跳过符号组合校验。
+    if (new RegExp(`^${PURE_HEADING_MARK}(?=\\s|$)`).test(trimmed)) {
+      continue;
+    }
+
     // 提取行首符号串（去缩进后的行首连续符号字符）。
     const m = trimmed.match(/^[^\s]+/);
     const firstToken = m ? m[0] : "";
-    // 符号串 = firstToken 前缀里的连续符号字符。
-    const symbolMatch = firstToken.match(/^[%?#$~*_@=&!]+/);
+    // 符号串 = firstToken 前缀里的连续符号字符（复用 symbols.ts 的单一事实来源）。
+    const symbolMatch = firstToken.match(new RegExp(`^[${SYMBOL_CHARS}]+`));
     const symbols = symbolMatch ? symbolMatch[0] : "";
 
     // 无符号行 = # 简写，合法。
     if (symbols === "") {
-      continue;
-    }
-
-    // @ 引用指令（@ 后必须空格）不是内容节点，由 references 单独处理；跳过符号组合校验。
-    if (/^@\s/.test(trimmed)) {
       continue;
     }
 
@@ -70,6 +72,7 @@ export function validateSyntax(text: string): SyntaxIssue[] {
       content: 0,
       form: 0,
       emphasis: 0,
+      flag: 0,
     };
     for (const ch of symbols) {
       const def = SYMBOL_BY_CHAR.get(ch);
@@ -101,9 +104,10 @@ export function validateSyntax(text: string): SyntaxIssue[] {
 function describeConflict(kind: SymbolKind, symbols: string): string {
   const labels: Record<SymbolKind, string> = {
     structure: "结构符号（# 标题 / % 思考 / ? 疑问）",
-    content: "内容符号（$ 定义 / ~ 公式化 / * 深挖 / _ 补全 / @ 引用）",
+    content: "内容符号（$ 定义 / ~ 公式化 / * 深挖 / _ 补全 / @ 链接）",
     form: "形式符号（= 举例 / & 对比）",
     emphasis: "修饰符号（! 重点）",
+    flag: "标注符号（+ 没听懂）",
   };
   return `符号「${symbols}」含有多个${labels[kind]}，一行至多 1 个${labels[kind].split("（")[0]}。`;
 }

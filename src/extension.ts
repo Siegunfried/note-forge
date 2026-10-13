@@ -2,13 +2,25 @@
  * 扩展入口：激活时注册命令与视图。
  */
 
-import * as vscode from "vscode";
 import * as fs from "fs";
-import * as path from "path";
-import { organizeActiveNote, migrateNodeStoresOnRename } from "./commands/organize";
+import * as vscode from "vscode";
+import {
+  organizeActiveNote,
+  migrateNodeStoresOnRename,
+  regenerateChapter,
+  reorderChapter,
+  reorderRollback,
+  nodePathAtCursor,
+} from "./commands/organize";
 import { createNote } from "./commands/create";
 import { openSettingsMenu } from "./commands/settings";
+import { importPdf } from "./commands/importPdf";
 import { NotesTreeProvider } from "./views/notesTree";
+import {
+  ChaptersTreeProvider,
+  buildChapterItems,
+} from "./views/chaptersTree";
+import { parseForgeTree } from "./core/forgeTree";
 import { resolvePairing } from "./core/pairing";
 import {
   initDiagnostics,
@@ -25,85 +37,124 @@ export function activate(context: vscode.ExtensionContext): void {
       organizeActiveNote(context.globalState),
     ),
     vscode.commands.registerCommand("noteForge.create", createNote),
+    vscode.commands.registerCommand("noteForge.importPdf", importPdf),
     vscode.commands.registerCommand("noteForge.openSettings", openSettingsMenu),
   );
 
-  const provider = new NotesTreeProvider();
-  const treeView = vscode.window.createTreeView("noteForge.notes", {
-    treeDataProvider: provider,
+  // 侧边栏：符号速查视图（按四类分组）。
+  const notesProvider = new NotesTreeProvider();
+  const notesView = vscode.window.createTreeView("noteForge.notes", {
+    treeDataProvider: notesProvider,
   });
-  context.subscriptions.push(treeView);
+  context.subscriptions.push(notesView);
 
-  // 右键 .forge → 打开并整理
-  context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.organizeFile", async () => {
-      const node = treeView.selection[0];
-      if (node?.kind === "forge") {
-        const doc = await vscode.workspace.openTextDocument(node.path);
-        await vscode.window.showTextDocument(doc);
-        await organizeActiveNote(context.globalState);
-      }
-    }),
-  );
+  // 侧边栏：章节树视图（供「重新生成」范围选中）。
+  const chaptersProvider = new ChaptersTreeProvider();
+  const chaptersView = vscode.window.createTreeView("noteForge.chapters", {
+    treeDataProvider: chaptersProvider,
+  });
+  context.subscriptions.push(chaptersView);
 
-  // 右键 .forge → 打开成品
-  context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.openTarget", async () => {
-      const node = treeView.selection[0];
-      if (node?.kind === "forge") {
-        const target = resolvePairing(node.path).targetPath;
-        if (fs.existsSync(target)) {
-          const doc = await vscode.workspace.openTextDocument(target);
-          await vscode.window.showTextDocument(doc);
-        } else {
-          vscode.window.showWarningMessage("还没有成品，先整理生成。");
+  // 侧边栏：独立「导入」入口视图（空树，靠视图欢迎页提供醒目的导入按钮）。
+  const importProvider: vscode.TreeDataProvider<void> = {
+    getTreeItem() {
+      return new vscode.TreeItem("导入");
+    },
+    getChildren() {
+      return [];
+    },
+  };
+  const importView = vscode.window.createTreeView("noteForge.import", {
+    treeDataProvider: importProvider,
+  });
+  context.subscriptions.push(importView);
+
+  // 刷新章节树：跟随当前活动编辑器（.forge 或同名 .md 对应 .forge）。
+  const refreshChapters = () => {
+    const editor = vscode.window.activeTextEditor;
+    let sourcePath: string | undefined;
+    let items: ReturnType<typeof buildChapterItems> = [];
+    if (editor) {
+      const pairing = resolvePairing(editor.document.uri.fsPath);
+      if (pairing.mode !== "inline") {
+        sourcePath = pairing.sourcePath;
+        try {
+          const rawText =
+            pairing.mode === "forge"
+              ? editor.document.getText()
+              : fs.readFileSync(pairing.sourcePath, "utf-8");
+          items = buildChapterItems(parseForgeTree(rawText));
+        } catch {
+          items = [];
         }
       }
-    }),
-  );
+    }
+    chaptersProvider.setContent(sourcePath, items);
+  };
 
-  // 右键文件夹 → 打开文件夹（系统文件管理器）
+  // 「重新生成」：优先章节树选中项，其次光标所在行。
   context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.openDir", () => {
-      const node = treeView.selection[0];
-      if (node?.kind === "dir") {
-        void vscode.env.openExternal(vscode.Uri.file(node.path));
-      }
-    }),
-  );
-
-  // 关闭文件夹（减号按钮）：从工作区移除该课程文件夹。用命令参数传节点，避免 selection 不可靠。
-  context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.closeFolder", (treeItem?: vscode.TreeItem) => {
-      let dirPath = treeItem?.id;
-      if (!dirPath) {
-        const node = treeView.selection[0];
-        if (node?.kind === "dir") {
-          dirPath = node.path;
-        }
-      }
-      if (!dirPath) {
+    vscode.commands.registerCommand("noteForge.regenerate", async () => {
+      const selection = chaptersView.selection;
+      if (
+        selection &&
+        selection.length > 0 &&
+        chaptersProvider.sourcePath
+      ) {
+        await regenerateChapter(context.globalState, {
+          sourcePath: chaptersProvider.sourcePath,
+          nodePath: selection[0].path,
+        });
+        refreshChapters();
         return;
       }
-      const roots = vscode.workspace.workspaceFolders ?? [];
-      const idx = roots.findIndex((f) => {
-        const root = f.uri.fsPath;
-        return dirPath === root || dirPath!.startsWith(root + path.sep);
-      });
-      if (idx >= 0) {
-        vscode.workspace.updateWorkspaceFolders(idx, 1);
+
+      const editor = vscode.window.activeTextEditor;
+      if (editor) {
+        const cursor = nodePathAtCursor(editor);
+        if (cursor) {
+          await regenerateChapter(context.globalState, cursor);
+          refreshChapters();
+          return;
+        }
       }
+
+      vscode.window.showWarningMessage(
+        "请先在侧边栏「章节」中选择一个章节，或把光标放在 .forge 速记的某一行上。",
+      );
     }),
   );
 
-  // 实时刷新：监听 .forge / .md 变化
-  const forgeWatcher = vscode.workspace.createFileSystemWatcher("**/*.forge");
-  const mdWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
-  forgeWatcher.onDidCreate(() => provider.refresh());
-  forgeWatcher.onDidDelete(() => provider.refresh());
-  mdWatcher.onDidCreate(() => provider.refresh());
-  mdWatcher.onDidDelete(() => provider.refresh());
-  context.subscriptions.push(forgeWatcher, mdWatcher);
+  // 「重构章节树」：先选章节范围，AI 重排该子树内节点的层级与顺序（不动内容）。
+  context.subscriptions.push(
+    vscode.commands.registerCommand("noteForge.reorder", async () => {
+      const selection = chaptersView.selection;
+      if (!(selection && selection.length > 0 && chaptersProvider.sourcePath)) {
+        vscode.window.showWarningMessage(
+          "请先在侧边栏「章节」中选择要重构的章节（范围）。",
+        );
+        return;
+      }
+      await reorderChapter(context.globalState, {
+        sourcePath: chaptersProvider.sourcePath,
+        nodePath: selection[0].path,
+      });
+      refreshChapters();
+    }),
+  );
+
+  // 「回滚重构」：恢复到重构前的快照。
+  context.subscriptions.push(
+    vscode.commands.registerCommand("noteForge.reorderRollback", async () => {
+      await reorderRollback(context.globalState, chaptersProvider.sourcePath);
+      refreshChapters();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(refreshChapters),
+  );
+  refreshChapters();
 
   // 语法诊断：打开 / 修改 .forge 时实时校验；关闭时清理。同时校验已打开的 .forge。
   context.subscriptions.push(
@@ -122,17 +173,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidRenameFiles((e) =>
       migrateNodeStoresOnRename(context.globalState, e),
     ),
-  );
-
-  // 添加文件夹：支持同时查看多门课程（已有工作区则加入，否则先打开文件夹）。
-  context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.addFolder", () => {
-      const cmd = vscode.workspace.workspaceFolders?.length
-        ? "workbench.action.addRootFolder"
-        : "vscode.openFolder";
-      void vscode.commands.executeCommand(cmd);
-    }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh()),
   );
 }
 
