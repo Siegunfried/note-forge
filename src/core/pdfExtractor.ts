@@ -4,17 +4,13 @@
  */
 
 import { DocBlock } from "./pdfImport";
-
-/** 在 CommonJS 输出下保留真正的动态 import（TS 会把 import() 编译成 require，这里绕开以加载 ESM）。 */
-const dynamicImport = new Function("specifier", "return import(specifier)") as (
-  specifier: string,
-) => Promise<any>;
+import { loadPdfjs } from "./dynamicImport";
 
 /** 从 PDF 二进制数据提取文本块（带字号/坐标/页码）。 */
 export async function extractPdfBlocks(
   data: ArrayBuffer | Uint8Array,
 ): Promise<DocBlock[]> {
-  const pdfjs = await dynamicImport("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdfjs = await loadPdfjs();
   const buffer = data instanceof Uint8Array ? data : new Uint8Array(data);
   const doc = await pdfjs.getDocument({ data: buffer, disableWorker: true }).promise;
 

@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {
@@ -54,10 +54,16 @@
         "icon": "$(list-unordered)"
       },
       {
-        "command": "noteForge.reorderRollback",
-        "title": "回滚重构",
+        "command": "noteForge.undoTree",
+        "title": "回退",
         "category": "Note Forge",
-        "icon": "$(discard)"
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "noteForge.redoTree",
+        "title": "前进",
+        "category": "Note Forge",
+        "icon": "$(arrow-right)"
       },
       {
         "command": "noteForge.importPdf",
@@ -214,7 +220,12 @@
           "group": "navigation"
         },
         {
-          "command": "noteForge.reorderRollback",
+          "command": "noteForge.undoTree",
+          "when": "view == noteForge.chapters",
+          "group": "navigation"
+        },
+        {
+          "command": "noteForge.redoTree",
           "when": "view == noteForge.chapters",
           "group": "navigation"
         }

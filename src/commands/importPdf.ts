@@ -34,8 +34,17 @@ export async function importPdf(): Promise<void> {
   if (!picked || picked.length === 0) {
     return;
   }
-  const sourcePath = picked[0].fsPath;
-  const data = await vscode.workspace.fs.readFile(picked[0]);
+
+  try {
+    await doImport(picked[0].fsPath);
+  } catch (err) {
+    vscode.window.showErrorMessage(`导入 PDF 失败：${friendlyError(err)}`);
+  }
+}
+
+/** 单个 PDF 的完整导入流程（文本型 / 扫描型分流）。 */
+async function doImport(sourcePath: string): Promise<void> {
+  const data = await vscode.workspace.fs.readFile(vscode.Uri.file(sourcePath));
 
   const blocks = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "Note Forge 解析 PDF 中…" },

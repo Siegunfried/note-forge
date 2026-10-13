@@ -9,7 +9,8 @@ import {
   migrateNodeStoresOnRename,
   regenerateChapter,
   reorderChapter,
-  reorderRollback,
+  undoTreeChange,
+  redoTreeChange,
   nodePathAtCursor,
 } from "./commands/organize";
 import { createNote } from "./commands/create";
@@ -143,10 +144,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // 「回滚重构」：恢复到重构前的快照。
+  // 「回退 / 前进」：在章节树历史快照间切换（保留三步）。
   context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.reorderRollback", async () => {
-      await reorderRollback(context.globalState, chaptersProvider.sourcePath);
+    vscode.commands.registerCommand("noteForge.undoTree", async () => {
+      await undoTreeChange(context.globalState, chaptersProvider.sourcePath);
+      refreshChapters();
+    }),
+    vscode.commands.registerCommand("noteForge.redoTree", async () => {
+      await redoTreeChange(context.globalState, chaptersProvider.sourcePath);
       refreshChapters();
     }),
   );
