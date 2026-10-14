@@ -3,7 +3,8 @@ import { equal, ok, match } from "node:assert/strict";
 import {
   blocksToLines,
   detectStructure,
-  buildForgePrompt,
+  buildConceptTreePrompt,
+  buildAttachPrompt,
   forgeSketch,
   isScannedPdf,
 } from "./pdfImport";
@@ -63,15 +64,15 @@ test("detectStructure：字号全一致时退化为全文正文", () => {
   equal(structured.every((l) => l.kind === "body"), true);
 });
 
-test("buildForgePrompt：含符号表与角色标注", () => {
+test("buildConceptTreePrompt：产出概念分类树，含角色标注", () => {
   const structured = detectStructure(
     blocksToLines([
       { text: "第一章", fontSize: 20, y: 120, x: 10, page: 0 },
       { text: "正文", fontSize: 12, y: 100, x: 10, page: 0 },
     ]),
   );
-  const prompt = buildForgePrompt(structured);
-  match(prompt, /`#` 标题/);
+  const prompt = buildConceptTreePrompt(structured);
+  match(prompt, /\$ 术语/);
   match(prompt, /\[H1\] 第一章/);
   match(prompt, /\[正文\] 正文/);
 });
@@ -114,7 +115,20 @@ test("isScannedPdf：多数块带字号则判为文本型", () => {
   equal(isScannedPdf(blocks), false);
 });
 
-test("buildForgePrompt 输出标注稳定：空行输入不报错", () => {
-  const prompt = buildForgePrompt([]);
-  ok(prompt.includes("待结构化的内容"));
+test("buildAttachPrompt：注入概念树与叶子符号说明", () => {
+  const structured = detectStructure(
+    blocksToLines([
+      { text: "正文", fontSize: 12, y: 100, x: 10, page: 0 },
+    ]),
+  );
+  const prompt = buildAttachPrompt(structured, "# 根\n  $ 子概念：定义");
+  match(prompt, /\$ 子概念：定义/);
+  match(prompt, /\[正文\] 正文/);
+  match(prompt, /定理/);
+  match(prompt, /例子/);
+});
+
+test("buildConceptTreePrompt：空行输入不报错", () => {
+  const prompt = buildConceptTreePrompt([]);
+  ok(prompt.includes("待提炼的文档"));
 });

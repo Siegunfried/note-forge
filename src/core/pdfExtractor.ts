@@ -3,6 +3,8 @@
  * 仅运行时加载；用真正的动态 import 加载 ESM 构建，避免 TS(commonjs) 把 import() 编译成 require 后无法加载 .mjs。
  */
 
+import * as path from "path";
+import { pathToFileURL } from "url";
 import { DocBlock } from "./pdfImport";
 
 /** 在 CommonJS 输出下保留真正的动态 import（TS 会把 import() 编译成 require，这里绕开以加载 ESM）。 */
@@ -10,11 +12,25 @@ const dynamicImport = new Function("specifier", "return import(specifier)") as (
   specifier: string,
 ) => Promise<any>;
 
+/** 扩展根目录（out/core 的上两级；打包后仍指向 vsix 内的扩展根）。 */
+function extRoot(): string {
+  return path.resolve(__dirname, "..", "..");
+}
+
+/** 把相对扩展根目录的路径转成 file:// URL 后动态 import，规避「裸说明符按 cwd 解析」的坑。 */
+function importExtension(rel: string): Promise<any> {
+  return dynamicImport(pathToFileURL(path.join(extRoot(), rel)).href);
+}
+
 /** 从 PDF 二进制数据提取文本块（带字号/坐标/页码）。 */
 export async function extractPdfBlocks(
   data: ArrayBuffer | Uint8Array,
 ): Promise<DocBlock[]> {
-  const pdfjs = await dynamicImport("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdfjs = await importExtension("node_modules/pdfjs-dist/legacy/build/pdf.mjs");
+  // pdfjs 4.x 即使 disableWorker 仍要求 workerSrc，否则主线程 import worker 会报错。
+  pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(
+    path.join(extRoot(), "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"),
+  ).href;
   const buffer = data instanceof Uint8Array ? data : new Uint8Array(data);
   const doc = await pdfjs.getDocument({ data: buffer, disableWorker: true }).promise;
 

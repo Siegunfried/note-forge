@@ -16,7 +16,8 @@ import {
   isScannedPdf,
   blocksToLines,
   detectStructure,
-  buildForgePrompt,
+  buildConceptTreePrompt,
+  buildAttachPrompt,
   forgeSketch,
 } from "../core/pdfImport";
 
@@ -64,26 +65,17 @@ export async function importPdf(): Promise<void> {
       temperature: settings.temperature,
       maxTokens: settings.maxTokens,
     };
-    const prompt = buildForgePrompt(structured);
     try {
-      const result = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: "Note Forge 结构化中…",
-          cancellable: true,
-        },
-        (progress, token) => {
-          const controller = new AbortController();
-          token.onCancellationRequested(() => controller.abort());
-          return chatCompletionStream(
-            config,
-            [{ role: "user", content: prompt }],
-            undefined,
-            controller.signal,
-          );
-        },
+      const conceptTree = await structify(
+        config,
+        buildConceptTreePrompt(structured),
+        "Note Forge 提炼概念树…",
       );
-      forgeText = result.markdown.trim() + "\n";
+      forgeText = await structify(
+        config,
+        buildAttachPrompt(structured, conceptTree),
+        "Note Forge 挂接定理与例子…",
+      );
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -118,6 +110,28 @@ export async function importPdf(): Promise<void> {
   vscode.window.showInformationMessage(
     "已生成 .forge 速记，请审阅后可点「整理」产出完整笔记。",
   );
+}
+
+/** 调一次结构化模型，返回去尾空白后的 markdown 文本。 */
+async function structify(
+  config: ApiClientConfig,
+  prompt: string,
+  title: string,
+): Promise<string> {
+  const result = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+    (progress, token) => {
+      const controller = new AbortController();
+      token.onCancellationRequested(() => controller.abort());
+      return chatCompletionStream(
+        config,
+        [{ role: "user", content: prompt }],
+        undefined,
+        controller.signal,
+      );
+    },
+  );
+  return result.markdown.trim() + "\n";
 }
 
 /** 替换后缀。 */

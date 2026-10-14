@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {
@@ -161,6 +161,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "noteForge.chapters",
+        "contents": "还没有笔记。\n[$(file-pdf) 导入 PDF 生成速记](command:noteForge.importPdf)\n[$(add) 新建速记](command:noteForge.create)"
+      }
+    ],
     "menus": {
       "view/title": [
         {
