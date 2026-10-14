@@ -45,26 +45,28 @@ export async function expandNode(
     }
   };
 
-  // 标题节点：先把标题文字书面化。
+  // 标题书面化与正文展开彼此独立（分别只读标题文字 / 正文行），并行发起以缩短耗时。
+  // 纯标题节点只做前者，非标题节点只做后者，标题且非纯标题节点两者并行。
+  const needTitle = isHeadingNode(node, ancestorTexts.length);
+  const needContent = !node.pureHeading;
+
+  const [titleRes, contentRes] = await Promise.all([
+    needTitle ? normalizeTitle(node.text, config, signal) : undefined,
+    needContent
+      ? expandContent(node, ancestorTexts, config, signal, extraRequirement)
+      : undefined,
+  ]);
+
   let title: string | undefined;
-  if (isHeadingNode(node, ancestorTexts.length)) {
-    const r = await normalizeTitle(node.text, config, signal);
-    add(r.usage);
-    title = r.title;
+  if (titleRes) {
+    add(titleRes.usage);
+    title = titleRes.title;
   }
 
-  // 纯标题（##）不生成任何正文内容，仅作为结构标题。
   let content: string | undefined;
-  if (!node.pureHeading) {
-    const r = await expandContent(
-      node,
-      ancestorTexts,
-      config,
-      signal,
-      extraRequirement,
-    );
-    add(r.usage);
-    content = r.content;
+  if (contentRes) {
+    add(contentRes.usage);
+    content = contentRes.content;
   }
 
   return {

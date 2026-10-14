@@ -4,7 +4,6 @@ import {
   blocksToLines,
   detectStructure,
   buildForgePrompt,
-  buildOcrPrompt,
   forgeSketch,
   isScannedPdf,
 } from "./pdfImport";
@@ -118,12 +117,4 @@ test("isScannedPdf：多数块带字号则判为文本型", () => {
 test("buildForgePrompt 输出标注稳定：空行输入不报错", () => {
   const prompt = buildForgePrompt([]);
   ok(prompt.includes("待结构化的内容"));
-});
-
-test("buildOcrPrompt：含符号表与页数，输出 .forge 指引", () => {
-  const prompt = buildOcrPrompt(3);
-  match(prompt, /`#` 标题/);
-  match(prompt, /`\$` 定义/);
-  match(prompt, /共 3 张页面图片/);
-  match(prompt, /直接输出 \.forge 文本/);
 });

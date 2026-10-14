@@ -14,3 +14,4 @@ npm run compile   # 或 npm run watch 增量编译
 ```
 
 在 VSCode 里按 F5 启动「扩展开发宿主」，即可实时调试。
+

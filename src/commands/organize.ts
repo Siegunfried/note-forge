@@ -35,16 +35,9 @@ import {
   applyReorder,
   ensureNoContentLoss,
 } from "../core/chapterReorder";
-import {
-  emptyHistory,
-  recordChange,
-  undoChange,
-  redoChange,
-  TreeHistory,
-} from "../core/treeHistory";
 
 const NODE_STORE_KEY = "noteForge.nodeStores";
-const TREE_HISTORY_KEY = "noteForge.treeHistory";
+const REORDER_SNAPSHOT_KEY = "noteForge.reorderSnapshots";
 
 /** 节点库：某 .forge 上次整理成功的原文 + 逐节点内容 + 逐节点标题。 */
 interface NodeStoreEntry {
@@ -473,8 +466,8 @@ export async function reorderChapter(
     return;
   }
 
-  // 写入前记录一步历史（供回退/前进）。
-  recordTreeChange(state, target.sourcePath, rawText);
+  // 写入前保存回滚快照。
+  saveReorderSnapshot(state, target.sourcePath, rawText);
   await vscode.workspace.fs.writeFile(
     vscode.Uri.file(target.sourcePath),
     Buffer.from(nextRaw, "utf8"),
@@ -482,102 +475,53 @@ export async function reorderChapter(
 
   const usageText = formatUsage(result.usage, config.model);
   vscode.window.showInformationMessage(
-    `章节树重构完成 ✓（重排 ${atoms.length} 个节点）${usageText}，可回退/前进。`,
+    `章节树重构完成 ✓（重排 ${atoms.length} 个节点）${usageText}，可一键回滚。`,
   );
 }
 
-/** 「回退一步」：把指定 .forge 恢复到最近一步历史（修改前）的状态。 */
-export async function undoTreeChange(
+/** 「回滚重构」：把指定 .forge 恢复到最近一次重构前的快照。 */
+export async function reorderRollback(
   state: vscode.Memento,
   sourcePath: string | undefined,
 ): Promise<void> {
-  const current = readForge(sourcePath);
-  if (current === undefined) {
-    return;
-  }
-
-  const history = getTreeHistory(state, sourcePath!);
-  const result = undoChange(history, current, Date.now());
-  if (result.restored === undefined) {
-    vscode.window.showInformationMessage("当前笔记没有可回退的上一步。");
-    return;
-  }
-  setTreeHistory(state, sourcePath!, result.history);
-  await writeForge(sourcePath!, result.restored);
-  vscode.window.showInformationMessage("已回退一步。");
-}
-
-/** 「前进一步」：把指定 .forge 恢复到被回退掉的后一步状态。 */
-export async function redoTreeChange(
-  state: vscode.Memento,
-  sourcePath: string | undefined,
-): Promise<void> {
-  const current = readForge(sourcePath);
-  if (current === undefined) {
-    return;
-  }
-
-  const history = getTreeHistory(state, sourcePath!);
-  const result = redoChange(history, current, Date.now());
-  if (result.restored === undefined) {
-    vscode.window.showInformationMessage("当前笔记没有可前进的下一步。");
-    return;
-  }
-  setTreeHistory(state, sourcePath!, result.history);
-  await writeForge(sourcePath!, result.restored);
-  vscode.window.showInformationMessage("已前进一步。");
-}
-
-/** 记录一次会改变树的「重构」操作前的内容（供回退）。 */
-function recordTreeChange(
-  state: vscode.Memento,
-  forgePath: string,
-  beforeContent: string,
-): void {
-  const history = getTreeHistory(state, forgePath);
-  setTreeHistory(state, forgePath, recordChange(history, beforeContent, Date.now()));
-}
-
-/** 读取某 .forge 的树历史（不存在则返回空历史）。 */
-function getTreeHistory(
-  state: vscode.Memento,
-  forgePath: string,
-): TreeHistory {
-  const map = state.get<Record<string, TreeHistory>>(TREE_HISTORY_KEY, {});
-  return map[forgePath] ?? emptyHistory();
-}
-
-/** 写回某 .forge 的树历史。 */
-function setTreeHistory(
-  state: vscode.Memento,
-  forgePath: string,
-  history: TreeHistory,
-): void {
-  const map = state.get<Record<string, TreeHistory>>(TREE_HISTORY_KEY, {});
-  map[forgePath] = history;
-  void state.update(TREE_HISTORY_KEY, map);
-}
-
-/** 读取 .forge 原文；失败或未指定路径时提示并返回 undefined。 */
-function readForge(sourcePath: string | undefined): string | undefined {
   if (!sourcePath) {
-    vscode.window.showWarningMessage("没有可操作的笔记：请先打开或选择对应的 .forge 笔记。");
-    return undefined;
+    vscode.window.showWarningMessage("没有可回滚的笔记：请先打开或选择要回滚的 .forge 笔记。");
+    return;
   }
-  try {
-    return fs.readFileSync(sourcePath, "utf-8");
-  } catch {
-    vscode.window.showWarningMessage("找不到原文速记（.forge）。");
-    return undefined;
+  const map = state.get<Record<string, string>>(REORDER_SNAPSHOT_KEY, {});
+  const snapshot = map[sourcePath];
+  if (snapshot === undefined) {
+    vscode.window.showInformationMessage("当前笔记没有可回滚的重构快照。");
+    return;
   }
-}
 
-/** 把 .forge 内容写回磁盘。 */
-async function writeForge(sourcePath: string, content: string): Promise<void> {
+  const choice = await vscode.window.showWarningMessage(
+    "回滚将把章节树恢复到重构前，覆盖当前内容。",
+    "回滚",
+    "取消",
+  );
+  if (choice !== "回滚") {
+    return;
+  }
+
   await vscode.workspace.fs.writeFile(
     vscode.Uri.file(sourcePath),
-    Buffer.from(content, "utf8"),
+    Buffer.from(snapshot, "utf8"),
   );
+  delete map[sourcePath];
+  void state.update(REORDER_SNAPSHOT_KEY, map);
+  vscode.window.showInformationMessage("已回滚到重构前。");
+}
+
+/** 保存某 .forge 的重构前快照（供回滚）。 */
+function saveReorderSnapshot(
+  state: vscode.Memento,
+  forgePath: string,
+  rawText: string,
+): void {
+  const map = state.get<Record<string, string>>(REORDER_SNAPSHOT_KEY, {});
+  map[forgePath] = rawText;
+  void state.update(REORDER_SNAPSHOT_KEY, map);
 }
 
 /** 定位光标所在 .forge 节点（仅 forge 模式；md-linked / inline 无行号对应，返回 undefined）。 */

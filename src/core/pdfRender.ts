@@ -1,9 +1,13 @@
 /**
  * PDF 页面渲染：把扫描版 PDF 页面渲染成 PNG 图片，供视觉模型 OCR。
  * 用 pdfjs-dist 渲染 + @napi-rs/canvas 离屏画布（Electron/Node 无 DOM canvas，走原生离屏实现）。
+ * 仅运行时加载；真正的动态 import 保留 ESM/CJS 互操作。
  */
 
-import { importExtensionModule, loadPdfjs } from "./dynamicImport";
+/** 在 CommonJS 输出下保留真正的动态 import（TS 会把 import() 编译成 require，这里绕开）。 */
+const dynamicImport = new Function("specifier", "return import(specifier)") as (
+  specifier: string,
+) => Promise<any>;
 
 /** 一张渲染好的页面图片。 */
 export interface PageImage {
@@ -28,8 +32,8 @@ export async function renderPagesToImages(
   maxPages: number,
   scale: number = DEFAULT_SCALE,
 ): Promise<RenderResult> {
-  const pdfjs = await loadPdfjs();
-  const canvasMod = await importExtensionModule("@napi-rs/canvas/index.js");
+  const pdfjs = await dynamicImport("pdfjs-dist/legacy/build/pdf.mjs");
+  const canvasMod = await dynamicImport("@napi-rs/canvas");
   const createCanvas = canvasMod.createCanvas ?? canvasMod.default?.createCanvas;
 
   const doc = await pdfjs.getDocument({ data, disableWorker: true }).promise;

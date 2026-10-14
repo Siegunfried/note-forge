@@ -9,8 +9,7 @@ import {
   migrateNodeStoresOnRename,
   regenerateChapter,
   reorderChapter,
-  undoTreeChange,
-  redoTreeChange,
+  reorderRollback,
   nodePathAtCursor,
 } from "./commands/organize";
 import { createNote } from "./commands/create";
@@ -55,20 +54,6 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: chaptersProvider,
   });
   context.subscriptions.push(chaptersView);
-
-  // 侧边栏：独立「导入」入口视图（空树，靠视图欢迎页提供醒目的导入按钮）。
-  const importProvider: vscode.TreeDataProvider<void> = {
-    getTreeItem() {
-      return new vscode.TreeItem("导入");
-    },
-    getChildren() {
-      return [];
-    },
-  };
-  const importView = vscode.window.createTreeView("noteForge.import", {
-    treeDataProvider: importProvider,
-  });
-  context.subscriptions.push(importView);
 
   // 刷新章节树：跟随当前活动编辑器（.forge 或同名 .md 对应 .forge）。
   const refreshChapters = () => {
@@ -144,14 +129,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // 「回退 / 前进」：在章节树历史快照间切换（保留三步）。
+  // 「回滚重构」：恢复到重构前的快照。
   context.subscriptions.push(
-    vscode.commands.registerCommand("noteForge.undoTree", async () => {
-      await undoTreeChange(context.globalState, chaptersProvider.sourcePath);
-      refreshChapters();
-    }),
-    vscode.commands.registerCommand("noteForge.redoTree", async () => {
-      await redoTreeChange(context.globalState, chaptersProvider.sourcePath);
+    vscode.commands.registerCommand("noteForge.reorderRollback", async () => {
+      await reorderRollback(context.globalState, chaptersProvider.sourcePath);
       refreshChapters();
     }),
   );

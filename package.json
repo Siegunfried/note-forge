@@ -2,7 +2,7 @@
   "name": "note-forge",
   "displayName": "Note Forge — 速记整理助手",
   "description": "用符号标记课堂速记，AI 自动补全成完整结构化笔记（DeepSeek / OpenAI 兼容接口）。",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "publisher": "note-forge",
   "license": "MIT",
   "engines": {
@@ -54,16 +54,10 @@
         "icon": "$(list-unordered)"
       },
       {
-        "command": "noteForge.undoTree",
-        "title": "回退",
+        "command": "noteForge.reorderRollback",
+        "title": "回滚重构",
         "category": "Note Forge",
-        "icon": "$(arrow-left)"
-      },
-      {
-        "command": "noteForge.redoTree",
-        "title": "前进",
-        "category": "Note Forge",
-        "icon": "$(arrow-right)"
+        "icon": "$(discard)"
       },
       {
         "command": "noteForge.importPdf",
@@ -127,22 +121,7 @@
         "noteForge.ocrModel": {
           "type": "string",
           "default": "",
-          "description": "扫描版文档的 OCR / 视觉多模态模型名（支持图片输入）；留空表示未配置该通道。"
-        },
-        "noteForge.ocrApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "OCR / 视觉模型的 API Key；留空复用 noteForge.apiKey（适用于视觉与文本用同一服务）。"
-        },
-        "noteForge.ocrBaseUrl": {
-          "type": "string",
-          "default": "",
-          "description": "OCR / 视觉模型的 OpenAI 兼容地址；留空复用 noteForge.apiBaseUrl。"
-        },
-        "noteForge.ocrMaxPages": {
-          "type": "number",
-          "default": 15,
-          "description": "扫描版 PDF 仅渲染并识别前 N 页（控制成本与请求大小）。"
+          "description": "扫描版文档的 OCR / 视觉模型名（第二期接入）；留空表示未配置该通道。"
         }
       }
     },
@@ -173,10 +152,6 @@
     "views": {
       "noteForge": [
         {
-          "id": "noteForge.import",
-          "name": "导入"
-        },
-        {
           "id": "noteForge.notes",
           "name": "笔记"
         },
@@ -186,12 +161,6 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "noteForge.import",
-        "contents": "导入 PDF 文档，系统按已定义的目录结构与配置规则，自动解析并生成「同名」的 Forge 速记（.forge）。\n\n[$(file-pdf) 导入 PDF 生成速记](command:noteForge.importPdf)"
-      }
-    ],
     "menus": {
       "view/title": [
         {
@@ -201,6 +170,11 @@
         },
         {
           "command": "noteForge.organize",
+          "when": "view == noteForge.notes",
+          "group": "navigation"
+        },
+        {
+          "command": "noteForge.importPdf",
           "when": "view == noteForge.notes",
           "group": "navigation"
         },
@@ -220,12 +194,7 @@
           "group": "navigation"
         },
         {
-          "command": "noteForge.undoTree",
-          "when": "view == noteForge.chapters",
-          "group": "navigation"
-        },
-        {
-          "command": "noteForge.redoTree",
+          "command": "noteForge.reorderRollback",
           "when": "view == noteForge.chapters",
           "group": "navigation"
         }

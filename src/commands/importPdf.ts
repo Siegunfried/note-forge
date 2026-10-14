@@ -1,8 +1,6 @@
 /**
- * 「导入 PDF 生成速记」命令：选 PDF → 提取 → 按文本型/扫描型分流 → 生成 .forge 并打开供审阅。
- * - 文本型：有字号信息 → 规则初筛 + AI 精加工（文本通道）。
- * - 扫描型：几乎无文本 → 渲染页面为图 → 视觉多模态模型 OCR 直接产出 .forge（需配置 noteForge.ocrModel）。
- * 生成的 .forge 只是原文速记，需用户审阅后再点「整理」产出 .md。
+ * 「导入 PDF 生成速记」命令：选 PDF → 提取文本块 → 规则初筛 + AI 精加工 → 生成 .forge 并打开供审阅。
+ * 生成的 .forge 只是原文速记，需用户审阅后再点「整理」产出 .md；扫描版（无文本）会提示走 OCR 通道。
  */
 
 import * as vscode from "vscode";
@@ -11,17 +9,14 @@ import { getSettings } from "../config/settings";
 import {
   ApiClientConfig,
   chatCompletionStream,
-  chatCompletionWithImages,
   ApiError,
 } from "../core/apiClient";
 import { extractPdfBlocks } from "../core/pdfExtractor";
-import { renderPagesToImages } from "../core/pdfRender";
 import {
   isScannedPdf,
   blocksToLines,
   detectStructure,
   buildForgePrompt,
-  buildOcrPrompt,
   forgeSketch,
 } from "../core/pdfImport";
 
@@ -34,166 +29,76 @@ export async function importPdf(): Promise<void> {
   if (!picked || picked.length === 0) {
     return;
   }
+  const sourcePath = picked[0].fsPath;
 
-  try {
-    await doImport(picked[0].fsPath);
-  } catch (err) {
-    vscode.window.showErrorMessage(`导入 PDF 失败：${friendlyError(err)}`);
-  }
-}
-
-/** 单个 PDF 的完整导入流程（文本型 / 扫描型分流）。 */
-async function doImport(sourcePath: string): Promise<void> {
-  const data = await vscode.workspace.fs.readFile(vscode.Uri.file(sourcePath));
-
+  const data = await vscode.workspace.fs.readFile(picked[0]);
   const blocks = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "Note Forge 解析 PDF 中…" },
     () => extractPdfBlocks(new Uint8Array(data)),
   );
 
-  const settings = getSettings();
-  const config = buildConfig(settings);
-  const scanned = isScannedPdf(blocks);
-
-  let forgeText: string;
-  if (scanned) {
-    forgeText = await handleScannedPdf(data, settings, config);
-    if (forgeText === "") {
-      return; // 已提示，未产出
-    }
-  } else {
-    forgeText = await handleTextPdf(blocks, settings, config);
-    if (forgeText === "") {
+  // 扫描版检测：几乎无文本 → 提示 OCR 通道（第二期），允许仍尝试。
+  if (isScannedPdf(blocks)) {
+    const choice = await vscode.window.showWarningMessage(
+      "疑似扫描版 PDF：文本通道几乎提取不到内容，需要 OCR 视觉通道（后续上线）。",
+      "仍尝试生成",
+    );
+    if (choice !== "仍尝试生成") {
       return;
     }
   }
 
-  await saveForgeForReview(sourcePath, forgeText);
-}
-
-/** 文本型 PDF：规则初筛 + AI 精加工。 */
-async function handleTextPdf(
-  blocks: Awaited<ReturnType<typeof extractPdfBlocks>>,
-  settings: ReturnType<typeof getSettings>,
-  config: ApiClientConfig,
-): Promise<string> {
   const structured = detectStructure(blocksToLines(blocks));
   if (structured.length === 0) {
     vscode.window.showWarningMessage("没有从 PDF 提取到任何文本。");
-    return "";
+    return;
   }
 
-  if (!settings.apiKey) {
+  const settings = getSettings();
+  let forgeText: string;
+  if (settings.apiKey) {
+    const config: ApiClientConfig = {
+      apiKey: settings.apiKey,
+      baseUrl: settings.apiBaseUrl,
+      model: settings.structureModel || settings.model,
+      temperature: settings.temperature,
+      maxTokens: settings.maxTokens,
+    };
+    const prompt = buildForgePrompt(structured);
+    try {
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Note Forge 结构化中…",
+          cancellable: true,
+        },
+        (progress, token) => {
+          const controller = new AbortController();
+          token.onCancellationRequested(() => controller.abort());
+          return chatCompletionStream(
+            config,
+            [{ role: "user", content: prompt }],
+            undefined,
+            controller.signal,
+          );
+        },
+      );
+      forgeText = result.markdown.trim() + "\n";
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : (err as Error)?.message ?? String(err);
+      vscode.window.showErrorMessage(`结构化失败：${message}`);
+      return;
+    }
+  } else {
+    forgeText = forgeSketch(structured);
     vscode.window.showInformationMessage(
       "未配置 API Key，已生成规则初筛草稿（可手动精修后再整理）。",
     );
-    return forgeSketch(structured);
   }
 
-  const prompt = buildForgePrompt(structured);
-  try {
-    const result = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: "Note Forge 结构化中…",
-        cancellable: true,
-      },
-      (progress, token) => {
-        const controller = new AbortController();
-        token.onCancellationRequested(() => controller.abort());
-        return chatCompletionStream(
-          config,
-          [{ role: "user", content: prompt }],
-          undefined,
-          controller.signal,
-        );
-      },
-    );
-    return result.markdown.trim() + "\n";
-  } catch (err) {
-    vscode.window.showErrorMessage(`结构化失败：${friendlyError(err)}`);
-    return "";
-  }
-}
-
-/** 扫描型 PDF：渲染页面 → 视觉模型 OCR 直接产出 .forge。 */
-async function handleScannedPdf(
-  data: Uint8Array,
-  settings: ReturnType<typeof getSettings>,
-  config: ApiClientConfig,
-): Promise<string> {
-  if (!settings.ocrModel) {
-    const choice = await vscode.window.showWarningMessage(
-      "疑似扫描版 PDF：需要视觉模型才能识别，请先在设置里配置 noteForge.ocrModel（一个支持图片输入的模型）。",
-      "打开设置",
-    );
-    if (choice === "打开设置") {
-      await vscode.commands.executeCommand(
-        "workbench.action.openSettings",
-        "noteForge.ocrModel",
-      );
-    }
-    return "";
-  }
-  if (!(settings.ocrApiKey || settings.apiKey)) {
-    await vscode.window.showErrorMessage(
-      "缺少 API Key：请在设置里填 noteForge.ocrApiKey（或 noteForge.apiKey / 环境变量 DEEPSEEK_API_KEY）。",
-    );
-    return "";
-  }
-
-  const rendered = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Note Forge 渲染页面中…" },
-    () => renderPagesToImages(data, settings.ocrMaxPages),
-  );
-  if (rendered.images.length === 0) {
-    vscode.window.showWarningMessage("未能渲染出任何页面图片。");
-    return "";
-  }
-  if (rendered.total > rendered.images.length) {
-    vscode.window.showWarningMessage(
-      `文档共 ${rendered.total} 页，仅识别前 ${rendered.images.length} 页（可在 noteForge.ocrMaxPages 调整）。`,
-    );
-  }
-
-  const ocrConfig: ApiClientConfig = {
-    ...config,
-    apiKey: settings.ocrApiKey || settings.apiKey,
-    baseUrl: settings.ocrBaseUrl || settings.apiBaseUrl,
-    model: settings.ocrModel,
-  };
-  const prompt = buildOcrPrompt(rendered.images.length);
-
-  try {
-    const result = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: "Note Forge 视觉识别中…",
-        cancellable: true,
-      },
-      (progress, token) => {
-        const controller = new AbortController();
-        token.onCancellationRequested(() => controller.abort());
-        return chatCompletionWithImages(
-          ocrConfig,
-          prompt,
-          rendered.images.map((img) => ({
-            base64: img.png.toString("base64"),
-            mimeType: "image/png",
-          })),
-          controller.signal,
-        );
-      },
-    );
-    return result.markdown.trim() + "\n";
-  } catch (err) {
-    vscode.window.showErrorMessage(`视觉识别失败：${friendlyError(err)}`);
-    return "";
-  }
-}
-
-/** 生成 .forge 并打开供审阅。 */
-async function saveForgeForReview(sourcePath: string, forgeText: string): Promise<void> {
   const target = withExt(sourcePath, ".forge");
   const targetUri = vscode.Uri.file(target);
   if (await vscode.workspace.fs.stat(targetUri).then(() => true, () => false)) {
@@ -213,24 +118,6 @@ async function saveForgeForReview(sourcePath: string, forgeText: string): Promis
   vscode.window.showInformationMessage(
     "已生成 .forge 速记，请审阅后可点「整理」产出完整笔记。",
   );
-}
-
-/** 组装文本/结构化通道的默认 API 配置（结构化任务优先用 structureModel）。 */
-function buildConfig(settings: ReturnType<typeof getSettings>): ApiClientConfig {
-  return {
-    apiKey: settings.apiKey,
-    baseUrl: settings.apiBaseUrl,
-    model: settings.structureModel || settings.model,
-    temperature: settings.temperature,
-    maxTokens: settings.maxTokens,
-  };
-}
-
-/** 友好错误信息。 */
-function friendlyError(err: unknown): string {
-  return err instanceof ApiError
-    ? err.message
-    : (err as Error)?.message ?? String(err);
 }
 
 /** 替换后缀。 */
