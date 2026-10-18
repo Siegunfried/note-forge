@@ -36,7 +36,7 @@ export interface SymbolDef {
 
 export const SYMBOLS: SymbolDef[] = [
   { char: "_", name: "补全",   meaning: "没记完 / 没记全",     action: "按常规结构补全，补全处标【补】",         annotation: "【补】",       color: "#9a9a9a", scope: "markup.italic.note-forge.fill", kind: "content" },
-  { char: "?", name: "疑问",   meaning: "有疑问 / 拿不准",     action: "用引用块包裹的旁注：详细解答 + 注明依据，不升级成标题",     annotation: "", color: "#ce9178", scope: "string.note-forge.question", kind: "structure" },
+  { char: "?", name: "疑问",   meaning: "有疑问 / 拿不准",     action: "引用块旁注，严格按「问题：…／回答：…」格式输出：问题由 AI 整理成通顺表述（去口语化、不逐字照抄），回答给详细解答 + 注明依据，不升级成标题",     annotation: "", color: "#ce9178", scope: "string.note-forge.question", kind: "structure" },
   { char: "!", name: "重点",   meaning: "重点",                 action: "加粗突出，不得丢失",     annotation: "",     color: "#c586c0", scope: "keyword.control.note-forge.important", kind: "emphasis" },
   { char: "~", name: "公式化", meaning: "把陈述/命题/证明转成严格形式", action: "主体只含数学/逻辑符号·公式·代码，不放任何文字；必要的文字解释仅作为旁批", annotation: "", color: "#b5cea8", scope: "constant.numeric.note-forge.formula", kind: "content" },
   { char: "%", name: "思考",   meaning: "自己的思考 / 批注",   action: "用引用块包裹的旁注：转成注释，不升级成标题",     annotation: "",     color: "#6a9955", scope: "comment.note-forge.thought", kind: "structure" },
